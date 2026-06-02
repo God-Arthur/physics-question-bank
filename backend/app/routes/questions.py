@@ -5,6 +5,7 @@ import os
 import json
 import time
 import uuid
+import ast
 from app.utils.database import db
 from app.models import Question, User
 from app.utils.upload_session import (
@@ -313,7 +314,7 @@ def create_question():
                 lst = json.loads(field) if isinstance(field, str) else field
             except Exception:
                 try:
-                    lst = eval(field)
+                    lst = ast.literal_eval(field)
                 except Exception:
                     lst = []
             if isinstance(lst, list):
@@ -610,7 +611,7 @@ def update_question(question_id):
                 lst = json.loads(field) if isinstance(field, str) else field
             except Exception:
                 try:
-                    lst = eval(field)
+                    lst = ast.literal_eval(field)
                 except Exception:
                     lst = []
             if isinstance(lst, list):

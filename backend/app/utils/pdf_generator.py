@@ -4,6 +4,7 @@ import tempfile
 import re
 import shutil
 import platform
+import ast
 
 def find_xelatex():
     """查找 xelatex 可执行文件"""
@@ -203,7 +204,7 @@ def generate_latex_template(title, time_info, questions):
         # 如果有图片
         if question.content_images:
             try:
-                images = eval(question.content_images) if isinstance(question.content_images, str) else question.content_images
+                images = ast.literal_eval(question.content_images) if isinstance(question.content_images, str) else question.content_images
                 for img_item in images:
                     # 支持两种格式：纯字符串文件名 或 {filename, size} 对象
                     if isinstance(img_item, dict):
@@ -327,7 +328,7 @@ def generate_answer_latex_template(title, time_info, questions):
         # 如果有答案图片
         if question.answer_images:
             try:
-                images = eval(question.answer_images) if isinstance(question.answer_images, str) else question.answer_images
+                images = ast.literal_eval(question.answer_images) if isinstance(question.answer_images, str) else question.answer_images
                 for img_item in images:
                     if isinstance(img_item, dict):
                         img_path = img_item.get('filename', '')

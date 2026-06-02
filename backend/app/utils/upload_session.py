@@ -4,6 +4,7 @@ import shutil
 import threading
 import time
 import uuid
+import ast
 from datetime import datetime
 from typing import Dict, Iterable, Optional, Tuple
 
@@ -151,7 +152,7 @@ def rewrite_images_field(value, mapping: Dict[str, str]):
         except Exception:
             # 老数据可能是 python 字面量
             try:
-                data = eval(value)
+                data = ast.literal_eval(value)
             except Exception:
                 return value
 
