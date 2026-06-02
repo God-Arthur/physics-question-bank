@@ -113,7 +113,7 @@ const examInfo = ref(null)
 const questions = ref([])
 const studentScores = ref({})
 const hasScores = ref(false)
-const canView = ref(false)
+const canViewPdf = ref(false)
 const pdfUrl = ref('')
 const generatingPdf = ref(false)
 
@@ -206,7 +206,7 @@ async function loadDetail() {
     questions.value = res.questions
     studentScores.value = res.student_scores || {}
     hasScores.value = res.has_scores
-    canView.value = res.can_view
+    canViewPdf.value = res.can_view
   } catch {
     ElMessage.error('加载考试详情失败')
     router.push('/my-exams')
@@ -214,8 +214,6 @@ async function loadDetail() {
     loading.value = false
   }
 }
-
-const canViewPdf = ref(false)
 
 onMounted(() => {
   loadDetail()

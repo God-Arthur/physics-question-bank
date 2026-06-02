@@ -9,6 +9,7 @@ from app.utils.database import db
 from app.models import Paper, Question, User, PaperStudent, StudentScore, Class, ClassStudent, PaperPublish, ClassExam, ExamScoreRecord
 from app.utils.pdf_generator import generate_paper_pdf, generate_latex_template, generate_answer_latex_template
 from app.utils.pdf_preview_session import get_tex_path, cleanup_pdf_session
+from app.routes.classes import get_exam_status
 
 # 逻辑斯蒂函数
 def logistic(x, a, b, c, d):

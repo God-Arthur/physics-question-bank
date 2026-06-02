@@ -129,6 +129,7 @@ const activeMenu = computed(() => {
 })
 
 const isTeacherOrAdmin = computed(() => ['admin', 'teacher'].includes(authStore.userRole))
+const isStudent = computed(() => authStore.userRole === 'student')
 
 const pageTitle = computed(() => route.meta?.title || '首页')
 
