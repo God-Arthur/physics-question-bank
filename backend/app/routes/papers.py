@@ -6,7 +6,7 @@ import numpy as np
 from datetime import datetime
 from app.models import now_bjt
 from app.utils.database import db
-from app.models import Paper, Question, User, PaperStudent, StudentScore, Class, ClassStudent, PaperPublish, ClassExam
+from app.models import Paper, Question, User, PaperStudent, StudentScore, Class, ClassStudent, PaperPublish, ClassExam, ExamScoreRecord
 from app.utils.pdf_generator import generate_paper_pdf, generate_latex_template, generate_answer_latex_template
 from app.utils.pdf_preview_session import get_tex_path, cleanup_pdf_session
 
@@ -665,6 +665,154 @@ def get_my_scores(paper_id):
     })
 
 
+# ==================== 我的考试 ====================
+
+@papers_bp.route('/my-exams', methods=['GET'])
+@jwt_required()
+def get_my_exams():
+    """学生查看自己参加的考试列表"""
+    user_id = get_jwt_identity()
+    current_user = User.query.get(int(user_id))
+
+    if current_user.role != 'student':
+        return jsonify({'error': '仅限学生使用'}), 403
+
+    # 获取学生加入的所有班级
+    class_students = ClassStudent.query.filter_by(
+        student_id=current_user.id, status='accepted'
+    ).all()
+    class_ids = [cs.class_id for cs in class_students]
+
+    if not class_ids:
+        return jsonify({'exams': []})
+
+    # 获取这些班级的所有发布记录
+    publishes = PaperPublish.query.filter(
+        PaperPublish.class_id.in_(class_ids)
+    ).all()
+
+    exams = []
+    for p in publishes:
+        paper = Paper.query.get(p.paper_id)
+        if not paper:
+            continue
+
+        # 检查是否已结束登记
+        exam = ClassExam.query.filter_by(
+            class_id=p.class_id,
+            publish_id=p.id
+        ).first()
+
+        # 判断考试状态
+        status = get_exam_status(p)
+
+        exams.append({
+            'id': p.id,
+            'paper_id': paper.id,
+            'publish_id': p.id,
+            'title': paper.title,
+            'exam_date': p.exam_date.isoformat() if p.exam_date else None,
+            'start_time': p.start_time,
+            'end_time': p.end_time,
+            'total_score': paper.total_score,
+            'difficulty': paper.difficulty,
+            'status': status,
+            'published_at': p.published_at.isoformat() if p.published_at else None,
+            'finished_at': exam.finished_at.isoformat() if exam and exam.finished_at else None,
+            'scoring_finished': exam is not None,
+            'allow_view_after_exam': p.allow_view_after_exam
+        })
+
+    exams.sort(key=lambda x: x.get('published_at') or '', reverse=True)
+
+    return jsonify({'exams': exams})
+
+
+@papers_bp.route('/my-exams/<int:publish_id>', methods=['GET'])
+@jwt_required()
+def get_my_exam_detail(publish_id):
+    """学生查看考试详情（题目列表、成绩、PDF）"""
+    user_id = get_jwt_identity()
+    current_user = User.query.get(int(user_id))
+
+    if current_user.role != 'student':
+        return jsonify({'error': '仅限学生使用'}), 403
+
+    publish = PaperPublish.query.get(publish_id)
+    if not publish:
+        return jsonify({'error': '考试不存在'}), 404
+
+    # 检查学生是否属于该班级
+    is_in_class = ClassStudent.query.filter_by(
+        class_id=publish.class_id, student_id=current_user.id, status='accepted'
+    ).first() is not None
+
+    if not is_in_class:
+        return jsonify({'error': '权限不足'}), 403
+
+    paper = Paper.query.get(publish.paper_id)
+    if not paper:
+        return jsonify({'error': '试卷不存在'}), 404
+
+    # 检查是否已结束登记
+    exam = ClassExam.query.filter_by(
+        class_id=publish.class_id,
+        publish_id=publish_id
+    ).first()
+
+    # 获取题目列表
+    questions_data = json.loads(paper.questions_data) if paper.questions_data else []
+    questions = []
+    for item in questions_data:
+        question = Question.query.get(item['question_id'])
+        if question:
+            questions.append({
+                'question_id': question.id,
+                'question_title': question.question_title or question.title,
+                'content': question.content,
+                'answer': question.answer,
+                'content_images': question.content_images,
+                'answer_images': question.answer_images,
+                'max_score': item.get('score', 10),
+                'difficulty': question.difficulty
+            })
+
+    # 获取学生成绩
+    student_scores = {}
+    has_scores = False
+    if exam and exam.scores_snapshot:
+        scores_list = json.loads(exam.scores_snapshot)
+        for s in scores_list:
+            if s['student_id'] == current_user.id:
+                student_scores = s.get('scores', {})
+                has_scores = True
+                break
+
+    # 判断是否允许查看
+    can_view = False
+    if exam and exam.finished_at:
+        if publish.allow_view_after_exam:
+            can_view = True
+
+    return jsonify({
+        'paper': {
+            'id': paper.id,
+            'title': paper.title,
+            'total_score': paper.total_score,
+            'difficulty': paper.difficulty,
+            'exam_date': publish.exam_date.isoformat() if publish.exam_date else None,
+            'start_time': publish.start_time,
+            'end_time': publish.end_time,
+            'allow_view_after_exam': publish.allow_view_after_exam
+        },
+        'questions': questions,
+        'student_scores': student_scores,
+        'has_scores': has_scores,
+        'can_view': can_view,
+        'scoring_finished': exam is not None
+    })
+
+
 @papers_bp.route('/<int:paper_id>/publish', methods=['POST'])
 @jwt_required()
 def publish_paper(paper_id):
@@ -678,11 +826,10 @@ def publish_paper(paper_id):
 
     data = request.get_json() or {}
     class_id = data.get('class_id')
+    exam_date_str = data.get('exam_date')
+    start_time = data.get('start_time')
+    end_time = data.get('end_time')
     allow_view_after_exam = data.get('allow_view_after_exam', False)
-
-    # 如果没有指定班级，使用试卷关联的班级
-    if not class_id:
-        class_id = paper.class_id
 
     if not class_id:
         return jsonify({'error': '请先选择考试班级'}), 400
@@ -696,10 +843,21 @@ def publish_paper(paper_id):
     if current_user.role != 'admin' and paper.created_by != current_user.id:
         return jsonify({'error': '权限不足'}), 403
 
-    # 创建发布记录
+    # 解析考试日期
+    exam_date = None
+    if exam_date_str:
+        try:
+            exam_date = datetime.strptime(exam_date_str, '%Y-%m-%d').date()
+        except ValueError:
+            pass
+
+    # 创建发布记录（每次发布创建一个独立的考试实例）
     publish = PaperPublish(
         paper_id=paper_id,
         class_id=class_id,
+        exam_date=exam_date,
+        start_time=start_time,
+        end_time=end_time,
         allow_view_after_exam=allow_view_after_exam,
         published_by=current_user.id
     )
@@ -744,35 +902,31 @@ def get_pending_review_papers():
 @papers_bp.route('/fit-difficulty-mapping', methods=['POST'])
 @jwt_required()
 def fit_difficulty_mapping():
-    """对score_data_updated=true的题目进行逻辑斯蒂回归拟合"""
+    """对 ExamScoreRecord 中的所有数据进行逻辑斯蒂回归拟合"""
     user_id = get_jwt_identity()
     current_user = User.query.get(int(user_id))
 
     if current_user.role not in ['admin', 'teacher']:
         return jsonify({'error': '权限不足'}), 403
 
-    # 获取需要拟合的题目（有成绩数据且未拟合或数据已更新）
-    questions = Question.query.filter(
-        Question.total_attempts > 0
-    ).all()
+    # 从 ExamScoreRecord 获取所有数据点
+    records = ExamScoreRecord.query.all()
 
-    if not questions:
+    if not records:
         return jsonify({'message': '没有需要拟合的数据'}), 200
 
     from scipy.optimize import curve_fit
 
-    # 收集所有题目的数据点 (难度系数, 平均得分率)
+    # 收集所有数据点 (难度系数, 得分率)
     x_data = []  # 难度系数
     y_data = []  # 得分率
 
-    for q in questions:
-        if q.total_attempts > 0:
-            avg_score_rate = q.total_score_rate / q.total_attempts
-            x_data.append(q.difficulty)
-            y_data.append(avg_score_rate)
+    for r in records:
+        x_data.append(r.difficulty)
+        y_data.append(r.score_rate)
 
     if len(x_data) < 4:
-        return jsonify({'error': '数据点不足，至少需要4个题目才能拟合'}), 400
+        return jsonify({'error': f'数据点不足，当前{len(x_data)}个，至少需要4个才能拟合'}), 400
 
     try:
         # 逻辑斯蒂函数: y = a + (b-a)/(1+exp(-c*(x-d)))
@@ -786,12 +940,12 @@ def fit_difficulty_mapping():
         a, b, c, d = popt
 
         # 更新所有题目的拟合参数
+        questions = Question.query.all()
         for q in questions:
             q.fit_param_a = float(a)
             q.fit_param_b = float(b)
             q.fit_param_c = float(c)
             q.fit_param_d = float(d)
-            q.score_data_updated = False
             q.last_fitted_at = now_bjt()
 
         db.session.commit()
@@ -801,7 +955,7 @@ def fit_difficulty_mapping():
 
         return jsonify({
             'message': '拟合完成',
-            'fitted_count': len(questions),
+            'data_points': len(x_data),
             'params': {'a': float(a), 'b': float(b), 'c': float(c), 'd': float(d)},
             'mapping': mapping
         })
@@ -916,7 +1070,7 @@ def get_paper_class_scores(paper_id):
 @papers_bp.route('/<int:paper_id>/finish-scoring', methods=['POST'])
 @jwt_required()
 def finish_scoring(paper_id):
-    """结束登记：创建考试快照，锁定成绩和题目信息"""
+    """结束登记：创建考试快照，保存得分记录到 ExamScoreRecord"""
     user_id = get_jwt_identity()
     current_user = User.query.get(int(user_id))
 
@@ -927,12 +1081,14 @@ def finish_scoring(paper_id):
     data = request.get_json()
     publish_id = data.get('publish_id')
 
-    # 确定班级ID
-    class_id = paper.class_id
-    if publish_id:
-        publish = PaperPublish.query.get(publish_id)
-        if publish and publish.class_id:
-            class_id = publish.class_id
+    if not publish_id:
+        return jsonify({'error': '缺少发布记录ID'}), 400
+
+    publish = PaperPublish.query.get(publish_id)
+    if not publish:
+        return jsonify({'error': '发布记录不存在'}), 404
+
+    class_id = publish.class_id
 
     if not class_id:
         return jsonify({'error': '试卷未关联班级'}), 400
@@ -946,7 +1102,7 @@ def finish_scoring(paper_id):
     # 检查是否已有快照
     existing_exam = ClassExam.query.filter_by(
         class_id=class_id,
-        paper_id=paper_id
+        publish_id=publish_id
     ).first()
     if existing_exam:
         return jsonify({'error': '该考试已结束登记，无法重复操作'}), 400
@@ -1001,19 +1157,50 @@ def finish_scoring(paper_id):
         paper_title=paper.title,
         paper_total_score=paper.total_score,
         paper_difficulty=paper.difficulty,
-        exam_date=paper.exam_date,
-        start_time=paper.start_time,
-        end_time=paper.end_time,
+        exam_date=publish.exam_date,
+        start_time=publish.start_time,
+        end_time=publish.end_time,
         questions_snapshot=json.dumps(questions_snapshot, ensure_ascii=False),
         scores_snapshot=json.dumps(scores_snapshot, ensure_ascii=False),
         finished_by=current_user.id
     )
     db.session.add(exam)
+
+    # 保存得分记录到 ExamScoreRecord（用于逻辑斯蒂拟合）
+    # 每条记录 = (题目难度系数, 学生得分率)
+    absent_student_ids = set(data.get('absent_student_ids', []) or [])
+    score_records_count = 0
+    for cs in class_students:
+        if cs.student_id in absent_student_ids:
+            continue  # 跳过未参加考试的学生
+        student = User.query.get(cs.student_id)
+        if not student:
+            continue
+        ps = PaperStudent.query.filter_by(
+            paper_id=paper_id, student_id=cs.student_id
+        ).first()
+        if not ps:
+            continue
+        for ss in ps.scores:
+            question = Question.query.get(ss.question_id)
+            if question and question.difficulty is not None and ss.max_score > 0:
+                score_rate = ss.score / ss.max_score
+                record = ExamScoreRecord(
+                    publish_id=publish_id,
+                    question_id=ss.question_id,
+                    student_id=cs.student_id,
+                    difficulty=question.difficulty,
+                    score_rate=score_rate
+                )
+                db.session.add(record)
+                score_records_count += 1
+
     db.session.commit()
 
     return jsonify({
         'message': '登记已结束',
-        'exam_id': exam.id
+        'exam_id': exam.id,
+        'score_records_saved': score_records_count
     })
 
 

@@ -61,6 +61,18 @@ const routes = [
         meta: { title: '试卷列表' }
       },
       {
+        path: 'my-exams',
+        name: 'MyExams',
+        component: () => import('../views/MyExams.vue'),
+        meta: { title: '我的考试' }
+      },
+      {
+        path: 'my-exams/:publishId',
+        name: 'MyExamDetail',
+        component: () => import('../views/MyExamDetail.vue'),
+        meta: { title: '考试详情' }
+      },
+      {
         path: 'papers/:id/edit',
         name: 'PaperEdit',
         component: () => import('../views/PaperCompose.vue'),

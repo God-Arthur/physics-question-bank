@@ -2,7 +2,7 @@ import json
 from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from app.utils.database import db
-from app.models import Class, ClassStudent, User, ClassExam, PaperPublish, Paper
+from app.models import Class, ClassStudent, User, ClassExam, PaperPublish, Paper, Question, PaperStudent
 
 classes_bp = Blueprint('classes', __name__)
 
@@ -440,13 +440,14 @@ def get_class_exams(class_id):
     for p in publishes:
         paper = Paper.query.get(p.paper_id)
         if paper:
-            # 根据考试日期和时间判断状态
-            status = get_exam_status(paper)
+            # 根据考试日期和时间判断状态（从发布记录读取）
+            status = get_exam_status(p)
 
             # 检查是否已结束登记
             exam = ClassExam.query.filter_by(
                 class_id=class_id,
-                paper_id=paper.id
+                paper_id=paper.id,
+                publish_id=p.id
             ).first()
 
             result.append({
@@ -454,9 +455,9 @@ def get_class_exams(class_id):
                 'paper_id': paper.id,
                 'publish_id': p.id,
                 'title': paper.title,
-                'exam_date': paper.exam_date.isoformat() if paper.exam_date else None,
-                'start_time': paper.start_time,
-                'end_time': paper.end_time,
+                'exam_date': p.exam_date.isoformat() if p.exam_date else None,
+                'start_time': p.start_time,
+                'end_time': p.end_time,
                 'total_score': paper.total_score,
                 'difficulty': paper.difficulty,
                 'status': status,
@@ -473,18 +474,18 @@ def get_class_exams(class_id):
     })
 
 
-def get_exam_status(paper):
-    """根据考试日期和时间判断考试状态"""
-    if not paper.exam_date or not paper.end_time:
+def get_exam_status(publish):
+    """根据考试日期和时间判断考试状态（从PaperPublish读取）"""
+    if not publish.exam_date or not publish.end_time:
         return '未开始'
 
     from datetime import datetime
     now = datetime.now()
-    exam_start = datetime.strptime(f"{paper.exam_date.isoformat()} {paper.start_time or '00:00'}", '%Y-%m-%d %H:%M')
+    exam_start = datetime.strptime(f"{publish.exam_date.isoformat()} {publish.start_time or '00:00'}", '%Y-%m-%d %H:%M')
 
     # 判断结束时间是否跨天（结束时间早于开始时间）
-    exam_end = datetime.strptime(f"{paper.exam_date.isoformat()} {paper.end_time}", '%Y-%m-%d %H:%M')
-    if paper.start_time and paper.end_time and paper.end_time < paper.start_time:
+    exam_end = datetime.strptime(f"{publish.exam_date.isoformat()} {publish.end_time}", '%Y-%m-%d %H:%M')
+    if publish.start_time and publish.end_time and publish.end_time < publish.start_time:
         # 跨天，结束日期加1天
         from datetime import timedelta
         exam_end += timedelta(days=1)
@@ -527,7 +528,7 @@ def get_exam_scores(class_id, publish_id):
     # 检查是否已有考试快照（结束登记后）
     exam = ClassExam.query.filter_by(
         class_id=class_id,
-        paper_id=paper.id
+        publish_id=publish_id
     ).first()
 
     if exam:
@@ -548,7 +549,7 @@ def get_exam_scores(class_id, publish_id):
             'from_snapshot': True
         })
 
-    # 没有快照，从实时数据读取（登记中）
+    # 没有快照，从实时数据读取（登记中，动态拉取班级成员）
     # 获取试卷题目信息
     questions_data = json.loads(paper.questions_data) if paper.questions_data else []
     questions = []
@@ -561,7 +562,7 @@ def get_exam_scores(class_id, publish_id):
                 'max_score': item.get('score', 10)
             })
 
-    # 获取班级中已接受的学生
+    # 获取班级中已接受的学生（动态拉取）
     class_students = ClassStudent.query.filter_by(
         class_id=class_id, status='accepted'
     ).all()
@@ -572,7 +573,7 @@ def get_exam_scores(class_id, publish_id):
         if not student:
             continue
 
-        # 获取该学生该试卷的成绩
+        # 获取该学生该发布记录的成绩
         ps = PaperStudent.query.filter_by(
             paper_id=paper.id, student_id=cs.student_id
         ).first()

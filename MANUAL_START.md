@@ -60,9 +60,8 @@ npm run dev
 
 | 角色 | 用户名 | 密码 |
 |------|--------|------|
-| 管理员 | admin | admin123 |
-| 教师 | teacher | teacher123 |
-| 学生 | student | student123 |
+| 管理员 | admin | admin1906 |
+
 
 ## 常见问题
 

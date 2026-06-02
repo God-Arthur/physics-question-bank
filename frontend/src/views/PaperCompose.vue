@@ -461,6 +461,9 @@ async function publishPaper() {
     // 然后发布
     await api.post(`/papers/${paperId.value}/publish`, {
       class_id: form.class_id,
+      exam_date: form.exam_date,
+      start_time: form.start_time,
+      end_time: form.end_time,
       allow_view_after_exam: form.allow_view_after_exam
     })
     console.log('[PaperCompose] published successfully')

@@ -315,12 +315,15 @@ class ClassExam(db.Model):
 
 
 class PaperPublish(db.Model):
-    """试卷发布记录（支持发布到多个班级）"""
+    """试卷发布记录（每次发布创建一个独立的考试实例）"""
     __tablename__ = 'paper_publishes'
 
     id = db.Column(db.Integer, primary_key=True)
     paper_id = db.Column(db.Integer, db.ForeignKey('papers.id'), nullable=False)
     class_id = db.Column(db.Integer, db.ForeignKey('classes.id'), nullable=False)
+    exam_date = db.Column(db.Date)  # 考试日期（发布时指定）
+    start_time = db.Column(db.String(5))  # 开始时间 HH:mm
+    end_time = db.Column(db.String(5))  # 结束时间 HH:mm
     allow_view_after_exam = db.Column(db.Boolean, default=False)
     published_at = db.Column(db.DateTime, default=now_bjt)
     published_by = db.Column(db.Integer, db.ForeignKey('users.id'))
@@ -330,10 +333,26 @@ class PaperPublish(db.Model):
             'id': self.id,
             'paper_id': self.paper_id,
             'class_id': self.class_id,
+            'exam_date': self.exam_date.isoformat() if self.exam_date else None,
+            'start_time': self.start_time,
+            'end_time': self.end_time,
             'allow_view_after_exam': self.allow_view_after_exam,
             'published_at': self.published_at.isoformat() if self.published_at else None,
             'published_by': self.published_by
         }
+
+
+class ExamScoreRecord(db.Model):
+    """考试得分记录（用于逻辑斯蒂拟合，每条记录为一个数据点）"""
+    __tablename__ = 'exam_score_records'
+
+    id = db.Column(db.Integer, primary_key=True)
+    publish_id = db.Column(db.Integer, db.ForeignKey('paper_publishes.id'), nullable=False)
+    question_id = db.Column(db.Integer, db.ForeignKey('questions.id'), nullable=False)
+    student_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    difficulty = db.Column(db.Float, nullable=False)  # 题目难度系数
+    score_rate = db.Column(db.Float, nullable=False)  # 得分率 (0~1)
+    created_at = db.Column(db.DateTime, default=now_bjt)
 
 
 class PaperStudent(db.Model):

@@ -21,6 +21,7 @@
         <h1 class="paper-title">{{ paperName }}</h1>
         <el-button type="primary" link @click="startEditTitle">编辑</el-button>
       </template>
+      <el-button type="success" @click="showPublishDialog = true" style="margin-left: auto">发布到班级</el-button>
     </div>
 
     <!-- 试卷信息栏 -->
@@ -112,18 +113,74 @@
     </div>
 
     <el-empty v-else description="暂无题目" />
+
+    <!-- 发布对话框 -->
+    <el-dialog v-model="showPublishDialog" title="发布到班级" width="500px">
+      <el-form label-width="100px">
+        <el-form-item label="考试班级" required>
+          <el-select v-model="publishForm.class_id" placeholder="选择考试班级" style="width: 100%">
+            <el-option
+              v-for="cls in classList"
+              :key="cls.id"
+              :label="cls.name"
+              :value="cls.id"
+            />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="考试日期" required>
+          <el-date-picker
+            v-model="publishForm.exam_date"
+            type="date"
+            placeholder="选择考试日期"
+            value-format="YYYY-MM-DD"
+            style="width: 100%"
+          />
+        </el-form-item>
+        <el-form-item label="考试时间" required>
+          <div style="display: flex; gap: 12px;">
+            <el-time-picker
+              v-model="publishForm.start_time"
+              placeholder="开始时间"
+              format="HH:mm"
+              value-format="HH:mm"
+              :clearable="false"
+              style="flex: 1"
+            />
+            <el-time-picker
+              v-model="publishForm.end_time"
+              placeholder="结束时间"
+              format="HH:mm"
+              value-format="HH:mm"
+              :clearable="false"
+              style="flex: 1"
+            />
+          </div>
+        </el-form-item>
+        <el-form-item label=" ">
+          <el-checkbox v-model="publishForm.allow_view_after_exam">
+            考试结束后允许学生查看试卷
+          </el-checkbox>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="showPublishDialog = false">取消</el-button>
+        <el-button type="primary" @click="handlePublish" :loading="publishing">发布</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup>
-import { ref, computed, onMounted, nextTick } from 'vue'
+import { ref, reactive, computed, onMounted, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../utils/api'
+import { useAuthStore } from '../stores/auth'
 import katex from 'katex'
 
 const route = useRoute()
 const router = useRouter()
+const authStore = useAuthStore()
 
 const loading = ref(false)
 const paperName = ref('')
@@ -131,6 +188,18 @@ const questions = ref([])
 const editingTitle = ref(false)
 const titleInputRef = ref(null)
 const instituteList = ref([])
+
+// 发布对话框
+const showPublishDialog = ref(false)
+const publishing = ref(false)
+const classList = ref([])
+const publishForm = reactive({
+  class_id: '',
+  exam_date: '',
+  start_time: '',
+  end_time: '',
+  allow_view_after_exam: false
+})
 
 // 加载机构列表（从题目数据中提取，避免额外API调用）
 function loadInstitutesFromQuestions() {
@@ -353,6 +422,69 @@ async function deleteQuestion(q) {
   }
 }
 
+// 加载班级列表
+async function loadClassList() {
+  try {
+    const res = await api.get('/classes')
+    let classes = res.classes || []
+    if (authStore.userRole === 'teacher') {
+      classes = classes.filter(c => c.is_mine)
+    }
+    classList.value = classes.map(c => ({
+      id: c.id,
+      name: c.display_name || c.name
+    }))
+  } catch {
+    // 错误已处理
+  }
+}
+
+// 发布到班级
+async function handlePublish() {
+  if (!publishForm.class_id) {
+    ElMessage.warning('请选择考试班级')
+    return
+  }
+  if (!publishForm.exam_date) {
+    ElMessage.warning('请选择考试日期')
+    return
+  }
+  if (!publishForm.start_time || !publishForm.end_time) {
+    ElMessage.warning('请选择考试时间')
+    return
+  }
+
+  try {
+    await ElMessageBox.confirm(
+      '发布后班级内的学生将能看到此考试，确定要发布吗？',
+      '确认发布',
+      { confirmButtonText: '确定发布', cancelButtonText: '取消', type: 'warning' }
+    )
+  } catch {
+    return
+  }
+
+  publishing.value = true
+  try {
+    const uuid = route.params.uuid
+    const paperId = uuid.replace(/^P/, '')
+
+    await api.post(`/papers/${paperId}/publish`, {
+      class_id: publishForm.class_id,
+      exam_date: publishForm.exam_date,
+      start_time: publishForm.start_time,
+      end_time: publishForm.end_time,
+      allow_view_after_exam: publishForm.allow_view_after_exam
+    })
+    ElMessage.success('发布成功')
+    showPublishDialog.value = false
+  } catch (error) {
+    ElMessage.error('发布失败')
+  } finally {
+    publishing.value = false
+  }
+}
+
 async function loadPaper() {
   const uuid = route.params.uuid
   if (!uuid) {
@@ -397,6 +529,7 @@ async function loadPaper() {
 
 onMounted(() => {
   loadPaper()
+  loadClassList()
 })
 </script>
 

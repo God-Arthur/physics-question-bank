@@ -18,9 +18,14 @@
           <span>题库</span>
         </el-menu-item>
         
-        <el-menu-item index="/papers">
+        <el-menu-item index="/papers" v-if="isTeacherOrAdmin">
           <el-icon><Tickets /></el-icon>
           <span>试卷列表</span>
+        </el-menu-item>
+        
+        <el-menu-item index="/my-exams" v-if="isStudent">
+          <el-icon><Tickets /></el-icon>
+          <span>我的考试</span>
         </el-menu-item>
         
         <el-menu-item index="/classes">
@@ -117,6 +122,7 @@ const activeMenu = computed(() => {
   const path = route.path
   if (path.startsWith('/questions')) return '/questions'
   if (path.startsWith('/papers')) return '/papers'
+  if (path.startsWith('/my-exams')) return '/my-exams'
   if (path.startsWith('/classes')) return '/classes'
   if (path.startsWith('/users')) return '/users'
   return '/questions'

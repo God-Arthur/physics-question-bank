@@ -24,6 +24,12 @@
       <el-table :data="tableData" border stripe style="width: 100%">
         <el-table-column prop="student_name" label="姓名" width="120" fixed="left" />
 
+        <el-table-column label="状态" width="90" align="center" fixed="left" v-if="!paperInfo.finished_at">
+          <template #default="{ row }">
+            <el-checkbox v-if="!row.isAverage" v-model="row.absent" @change="onAbsentChange(row)">未参加</el-checkbox>
+          </template>
+        </el-table-column>
+
         <el-table-column
           v-for="(q, index) in questions"
           :key="q.question_id"
@@ -35,9 +41,9 @@
             <template v-if="row.isAverage">
               <span style="font-weight: bold; color: #409EFF">{{ row.scores[q.question_id]?.toFixed(1) || 0 }}</span>
             </template>
-            <template v-else-if="paperInfo.finished_at">
-              <span>{{ row.scores[q.question_id] || 0 }}</span>
-              <div style="font-size: 11px; color: #909399">/{{ q.max_score }}</div>
+            <template v-else-if="paperInfo.finished_at || row.absent">
+              <span>{{ row.absent ? '-' : (row.scores[q.question_id] || 0) }}</span>
+              <div v-if="!row.absent" style="font-size: 11px; color: #909399">/{{ q.max_score }}</div>
             </template>
             <template v-else>
               <el-input-number
@@ -156,13 +162,26 @@ function updateTotal(row) {
   row.total_score = total
 }
 
+function onAbsentChange(row) {
+  if (row.absent) {
+    // 标记为未参加，清空成绩
+    for (const q of questions.value) {
+      row.scores[q.question_id] = 0
+    }
+    row.total_score = 0
+  }
+}
+
 async function loadData() {
   loading.value = true
   try {
     const res = await api.get(`/classes/${classId}/exams/${publishId}/scores`)
     paperInfo.value = res.paper
     questions.value = res.questions
-    students.value = res.students
+    students.value = res.students.map(s => ({
+      ...s,
+      absent: false  // 初始化未参加标记
+    }))
   } catch (error) {
     ElMessage.error('加载数据失败')
     goBack()
@@ -206,8 +225,13 @@ async function finishScoring() {
 
   finishing.value = true
   try {
+    const absentIds = students.value
+      .filter(s => s.absent)
+      .map(s => s.student_id)
+
     await api.post(`/papers/${paperInfo.value.id}/finish-scoring`, {
-      publish_id: publishId
+      publish_id: publishId,
+      absent_student_ids: absentIds
     })
     paperInfo.value.finished_at = new Date().toISOString()
     ElMessage.success('登记已结束')
