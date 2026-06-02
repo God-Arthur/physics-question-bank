@@ -1,0 +1,55 @@
+version: '3.8'
+
+services:
+  # PostgreSQL 数据库
+  db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: physics_db
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # 后端 API
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@db:5432/physics_db
+      - JWT_SECRET_KEY=your-secret-key-change-in-production
+      - FLASK_ENV=production
+    volumes:
+      - uploads:/app/app/static/uploads
+      - papers:/app/app/static/papers
+    ports:
+      - "5000:5000"
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # 前端 Nginx
+  frontend:
+    image: nginx:alpine
+    volumes:
+      - ./frontend/dist:/usr/share/nginx/html:ro
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  uploads:
+  papers:
