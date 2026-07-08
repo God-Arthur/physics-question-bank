@@ -7,15 +7,17 @@ const api = axios.create({
   timeout: 30000
 })
 
+const isDev = import.meta.env.DEV
+
 // 请求拦截器
 api.interceptors.request.use(
   config => {
     const token = localStorage.getItem('token')
     if (token) {
       config.headers.Authorization = `Bearer ${token}`
-      console.log('发送请求:', config.url, 'Token:', token.substring(0, 20) + '...')
-    } else {
-      console.log('发送请求:', config.url, '无 Token')
+    }
+    if (isDev) {
+      console.debug('发送请求:', config.url, token ? '已携带 Token' : '无 Token')
     }
     return config
   },
@@ -31,11 +33,15 @@ api.interceptors.response.use(
   },
   error => {
     const message = error.response?.data?.error || '请求失败'
-    console.error('请求错误:', error.response?.status, message)
+    if (isDev) {
+      console.error('请求错误:', error.response?.status, message)
+    }
     ElMessage.error(message)
-    
+
     if (error.response?.status === 401) {
-      console.error('401 未授权，清除 token 并跳转登录')
+      if (isDev) {
+        console.error('401 未授权，清除 token 并跳转登录')
+      }
       // 登录过期时也尝试清理上传会话和PDF预览会话（不依赖 token）
       cleanupUploadSessionNoAuth()
       cleanupPdfSessionNoAuth()

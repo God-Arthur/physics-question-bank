@@ -111,7 +111,7 @@
               <span>第{{ index + 1 }}题</span>
               <el-tag type="warning">{{ item.score }}分</el-tag>
             </div>
-            <div class="question-content" v-html="truncateContent(item.question.content)"></div>
+            <div class="question-content">{{ truncateContent(item.question.content) }}</div>
           </div>
         </div>
         
@@ -168,7 +168,7 @@
               <span>第{{ index + 1 }}题</span>
               <el-tag type="warning">{{ item.score }}分</el-tag>
             </div>
-            <div class="question-content" v-html="truncateContent(item.question.content)"></div>
+            <div class="question-content">{{ truncateContent(item.question.content) }}</div>
           </div>
         </div>
       </template>

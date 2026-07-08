@@ -525,8 +525,8 @@ import { useRouter, onBeforeRouteLeave } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../utils/api'
 import { useAuthStore } from '../stores/auth'
-import katex from 'katex'
 import { ensureUploadSession, cleanupUploadSessionAuth, cleanupUploadSessionNoAuth } from '../utils/uploadSession'
+import { renderLatex } from '../utils/latex'
 
 const router = useRouter()
 const authStore = useAuthStore()
@@ -1274,46 +1274,6 @@ function handleBatchDelete() {
     uploadedImages.value = uploadedImages.value.filter(img => !toDelete.includes(img.name))
     selectedImageNames.value = []
   }).catch(() => {})
-}
-
-// --- LaTeX 渲染 ---
-
-function renderLatex(content) {
-  if (!content) return ''
-  try {
-    let text = content
-    // 先提取公式，用占位符保护，避免被HTML转义破坏
-    const formulas = []
-    // 块级公式 $$...$$
-    text = text.replace(/\$\$([^$]+)\$\$/g, (match, latex) => {
-      formulas.push({ type: 'display', latex })
-      return `%%LATEX_FORMULA_${formulas.length - 1}%%`
-    })
-    // 行内公式 $...$
-    text = text.replace(/\$([^$]+)\$/g, (match, latex) => {
-      formulas.push({ type: 'inline', latex })
-      return `%%LATEX_FORMULA_${formulas.length - 1}%%`
-    })
-    
-    // 现在安全地转义HTML特殊字符（公式已被保护）
-    text = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-    
-    // 还原公式并渲染
-    text = text.replace(/%%LATEX_FORMULA_(\d+)%%/g, (match, idx) => {
-      const f = formulas[parseInt(idx)]
-      if (!f) return match
-      try {
-        return katex.renderToString(f.latex, { throwOnError: false, displayMode: f.type === 'display' })
-      } catch {
-        return `<code>${f.latex}</code>`
-      }
-    })
-    
-    text = text.replace(/\n/g, '<br>')
-    return text
-  } catch {
-    return content
-  }
 }
 
 // 打开预览弹窗

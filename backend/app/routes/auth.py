@@ -1,8 +1,8 @@
-from flask import Blueprint, request, jsonify
-from flask_jwt_extended import create_access_token, jwt_required, get_jwt_identity, get_jwt
+from flask import Blueprint, request, jsonify, current_app
+from flask_jwt_extended import create_access_token, jwt_required, get_jwt_identity
 from app.utils.database import db
 from app.models import User
-import traceback
+
 
 auth_bp = Blueprint('auth', __name__)
 
@@ -65,8 +65,9 @@ def login():
         return jsonify({'error': '用户名或密码错误'}), 401
     
     access_token = create_access_token(identity=str(user.id))
-    print(f"[DEBUG] 登录成功，用户ID: {user.id}, Token: {access_token[:30]}...")
-    
+    if current_app.config.get('DEBUG_API_LOGS'):
+        current_app.logger.debug("登录成功，用户ID: %s", user.id)
+
     return jsonify({
         'message': '登录成功',
         'access_token': access_token,
@@ -80,23 +81,23 @@ def get_current_user():
     """获取当前用户信息"""
     try:
         # 获取 JWT 信息
-        jwt_data = get_jwt()
         user_id = get_jwt_identity()
-        
-        print(f"[DEBUG] /me 请求 - JWT数据: {jwt_data}")
-        print(f"[DEBUG] /me 请求 - 用户ID: {user_id}")
-        
+
+        if current_app.config.get('DEBUG_API_LOGS'):
+            current_app.logger.debug("/me 请求 - 用户ID: %s", user_id)
+
         user = User.query.get(user_id)
-        
+
         if not user:
-            print(f"[DEBUG] /me 请求 - 用户不存在: {user_id}")
+            if current_app.config.get('DEBUG_API_LOGS'):
+                current_app.logger.debug("/me 请求 - 用户不存在: %s", user_id)
             return jsonify({'error': '用户不存在'}), 404
-        
-        print(f"[DEBUG] /me 请求 - 成功: {user.username}")
+
+        if current_app.config.get('DEBUG_API_LOGS'):
+            current_app.logger.debug("/me 请求 - 成功: %s", user.username)
         return jsonify({'user': user.to_dict()})
     except Exception as e:
-        print(f"[DEBUG] /me 请求 - 异常: {str(e)}")
-        print(traceback.format_exc())
+        current_app.logger.exception("/me 请求异常")
         return jsonify({'error': f'服务器错误: {str(e)}'}), 500
 
 
@@ -138,7 +139,12 @@ def update_user(user_id):
     """更新用户信息"""
     current_user_id = get_jwt_identity()
     current_user = User.query.get(current_user_id)
-    
+    user = User.query.get(user_id)
+    if not user:
+        return jsonify({'error': '用户不存在'}), 404
+
+    data = request.get_json() or {}
+
     # 只有管理员或用户本人可以修改基本信息
     if current_user.role == 'admin':
         pass
@@ -163,13 +169,7 @@ def update_user(user_id):
     else:
         if int(current_user_id) != int(user_id):
             return jsonify({'error': '权限不足'}), 403
-    
-    user = User.query.get(user_id)
-    if not user:
-        return jsonify({'error': '用户不存在'}), 404
-    
-    data = request.get_json()
-    
+
     if data.get('real_name'):
         user.real_name = data['real_name']
     

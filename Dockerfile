@@ -32,4 +32,4 @@ RUN mkdir -p app/static/uploads app/static/papers
 EXPOSE 5000
 
 # 启动命令
-CMD ["python", "run.py"]
+CMD ["python", "run_prod.py"]

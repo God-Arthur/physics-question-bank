@@ -236,6 +236,7 @@ def get_questions():
         
         result_groups.append({
             'paper_id': idx,  # 序号ID
+            'paper_key': paper_name,  # 稳定分组键，用于批量删除等操作
             'paper_uuid': group['paper_uuid'],
             'paper_name': group['paper_name'],
             'difficulty': difficulty,
@@ -544,8 +545,8 @@ def crop_with_boxes():
                     'source': fname,
                     'box': box
                 })
-        except Exception as e:
-            print(f"[crop-with-boxes] Error: {e}")
+        except Exception:
+            current_app.logger.exception("按检测框裁剪图片失败")
             continue
     
     return jsonify({
@@ -630,6 +631,70 @@ def update_question(question_id):
         cleanup_upload_session(current_app, upload_session_id)
     
     return jsonify({'message': '更新成功', 'question': question.to_dict()})
+
+
+@questions_bp.route('/batch-delete', methods=['POST'])
+@jwt_required()
+def batch_delete_questions_by_papers():
+    """按前端试卷分组批量删除题目。"""
+    user_id = get_jwt_identity()
+    current_user = User.query.get(user_id)
+
+    if current_user.role not in ['admin', 'teacher']:
+        return jsonify({'error': '权限不足'}), 403
+
+    data = request.get_json() or {}
+    paper_keys = data.get('paper_keys') or []
+    paper_ids = data.get('paper_ids') or []
+    if paper_keys and not isinstance(paper_keys, list):
+        return jsonify({'error': '参数错误'}), 400
+    if not isinstance(paper_ids, list):
+        return jsonify({'error': '参数错误'}), 400
+    if not paper_keys and not paper_ids:
+        return jsonify({'error': '请选择要删除的试卷'}), 400
+
+    target_paper_names = set(str(name) for name in paper_keys if name)
+
+    # 与 get_questions 的分组序号保持一致：按创建时间倒序得到试卷分组。
+    questions = Question.query.order_by(Question.created_at.desc()).all()
+    groups = []
+    seen = set()
+    for question in questions:
+        paper_name = question.title or question.question_title or '未命名题目'
+        if paper_name not in seen:
+            seen.add(paper_name)
+            groups.append(paper_name)
+
+    deleted_count = 0
+    deleted_papers = set()
+
+    for paper_id in paper_ids:
+        try:
+            group_index = int(paper_id)
+        except (TypeError, ValueError):
+            continue
+
+        if 1 <= group_index <= len(groups):
+            target_paper_names.add(groups[group_index - 1])
+
+    for paper_name in target_paper_names:
+        if paper_name in deleted_papers:
+            continue
+        deleted_papers.add(paper_name)
+
+        paper_questions = Question.query.filter(
+            db.or_(
+                Question.title == paper_name,
+                db.and_(Question.title.is_(None), Question.question_title == paper_name)
+            )
+        ).all()
+        for question in paper_questions:
+            db.session.delete(question)
+            deleted_count += 1
+
+    db.session.commit()
+
+    return jsonify({'message': '删除成功', 'deleted_count': deleted_count})
 
 
 @questions_bp.route('/<int:question_id>', methods=['DELETE'])

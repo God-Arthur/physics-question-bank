@@ -59,7 +59,7 @@
                 </el-tag>
                 <span class="question-id">ID: {{ question.id }}</span>
               </div>
-              <div class="question-content" v-html="truncateContent(question.content)"></div>
+              <div class="question-content">{{ truncateContent(question.content) }}</div>
               <div class="question-footer">
                 <el-icon v-if="isSelected(question.id)" color="#409EFF"><Select /></el-icon>
               </div>

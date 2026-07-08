@@ -277,12 +277,12 @@
 <script setup>
 import { ref, reactive, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useRoute, useRouter, onBeforeRouteLeave } from 'vue-router'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { Delete } from '@element-plus/icons-vue'
 import api from '../utils/api'
 import { useAuthStore } from '../stores/auth'
-import katex from 'katex'
 import { ensureUploadSession, cleanupUploadSessionAuth, cleanupUploadSessionNoAuth } from '../utils/uploadSession'
+import { renderLatex } from '../utils/latex'
 
 const route = useRoute()
 const router = useRouter()
@@ -314,6 +314,7 @@ const manageInstituteMode = ref('view') // 'view' | 'add' | 'edit'
 const manageInstituteSubmitting = ref(false)
 const manageInstituteFormRef = ref(null)
 const manageInstituteForm = reactive({
+  id: null,
   name: '',
   code: ''
 })
@@ -587,6 +588,7 @@ function openManageInstituteDialog() {
 // 添加机构（在管理弹窗内）
 function openAddInstituteInManage() {
   manageInstituteMode.value = 'add'
+  manageInstituteForm.id = null
   manageInstituteForm.name = ''
   manageInstituteForm.code = ''
 }
@@ -594,6 +596,7 @@ function openAddInstituteInManage() {
 // 编辑机构
 function editInstitute(row) {
   manageInstituteMode.value = 'edit'
+  manageInstituteForm.id = row.id
   manageInstituteForm.name = row.name
   manageInstituteForm.code = row.code
 }
@@ -612,7 +615,7 @@ async function submitManageInstitute() {
         })
         ElMessage.success(`机构 ${res.institute.code} 创建成功`)
       } else if (manageInstituteMode.value === 'edit') {
-        const res = await api.put(`/institutes/${manageInstituteForm.code}`, {
+        const res = await api.put(`/institutes/${manageInstituteForm.id}`, {
           name: manageInstituteForm.name
         })
         ElMessage.success(`机构 ${res.institute.code} 更新成功`)
@@ -635,55 +638,13 @@ async function deleteInstitute(row) {
       '确认删除',
       { confirmButtonText: '删除', cancelButtonText: '取消', type: 'warning' }
     )
-    await api.delete(`/institutes/${row.code}`)
+    await api.delete(`/institutes/${row.id}`)
     ElMessage.success('删除成功')
     await loadInstitutes()
   } catch (error) {
     if (error !== 'cancel') {
       // 错误已处理
     }
-  }
-}
-
-function renderLatex(content) {
-  if (!content) return ''
-
-  try {
-    // 不替换换行，避免破坏 KaTeX 生成的 HTML/SVG
-
-    const placeholders = []
-    const hold = (html) => {
-      const key = `\u0000KATEX${placeholders.length}\u0000`
-      placeholders.push(html)
-      return key
-    }
-
-    // 先处理块级公式 $$...$$，避免被行内正则吞掉
-    content = content.replace(/\$\$([\s\S]+?)\$\$/g, (match, latex) => {
-      try {
-        return hold(katex.renderToString(latex, { throwOnError: false, displayMode: true }))
-      } catch {
-        return match
-      }
-    })
-
-    // 再处理行内公式 $...$
-    content = content.replace(/\$([^$\n]+?)\$/g, (match, latex) => {
-      try {
-        return hold(katex.renderToString(latex, { throwOnError: false }))
-      } catch {
-        return match
-      }
-    })
-
-    // 还原占位符
-    placeholders.forEach((html, i) => {
-      content = content.split(`\u0000KATEX${i}\u0000`).join(html)
-    })
-
-    return content
-  } catch {
-    return content
   }
 }
 

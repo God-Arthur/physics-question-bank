@@ -1,5 +1,7 @@
 import os
 import datetime
+import logging
+import secrets
 from flask import Flask, request, send_from_directory
 from flask_cors import CORS
 from flask_jwt_extended import JWTManager
@@ -13,52 +15,61 @@ from app.routes.pdf_preview import pdf_preview_bp
 
 def create_app():
     app = Flask(__name__)
-    
-    # 配置 - 使用固定的强密钥
-    app.config['SECRET_KEY'] = 'physics-question-bank-secret-key-2024-for-production-use-only'
-    app.config['JWT_SECRET_KEY'] = 'jwt-secret-key-2024-for-physics-question-bank-system-long-enough'
+
+    # 配置 - 生产环境通过环境变量注入密钥，本地开发自动生成临时密钥
+    app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY') or secrets.token_urlsafe(32)
+    app.config['JWT_SECRET_KEY'] = os.environ.get('JWT_SECRET_KEY') or app.config['SECRET_KEY']
     app.config['JWT_ACCESS_TOKEN_EXPIRES'] = datetime.timedelta(hours=24)
     app.config['JWT_ERROR_MESSAGE_KEY'] = 'error'
-    app.config['UPLOAD_FOLDER'] = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'static/uploads')
-    app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024
-    
+    app.config['UPLOAD_FOLDER'] = os.environ.get(
+        'UPLOAD_FOLDER',
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), 'static/uploads')
+    )
+    app.config['MAX_CONTENT_LENGTH'] = int(os.environ.get('MAX_CONTENT_LENGTH', 16 * 1024 * 1024))
+    app.config['DEBUG_API_LOGS'] = os.environ.get('DEBUG_API_LOGS', '').lower() in ('1', 'true', 'yes')
+
+    log_level = os.environ.get('LOG_LEVEL', 'DEBUG' if app.config['DEBUG_API_LOGS'] else 'INFO').upper()
+    logging.basicConfig(level=getattr(logging, log_level, logging.INFO))
+    app.logger.setLevel(getattr(logging, log_level, logging.INFO))
+
     # 初始化扩展
-    CORS(app, resources={r"/api/*": {"origins": "*"}})
+    cors_origins = os.environ.get('CORS_ORIGINS', '*')
+    cors_origins = [origin.strip() for origin in cors_origins.split(',') if origin.strip()] or '*'
+    CORS(app, resources={r"/api/*": {"origins": cors_origins}})
     jwt = JWTManager(app)
     
     # JWT 错误处理
     @jwt.unauthorized_loader
     def unauthorized_callback(reason):
-        print(f"[JWT ERROR] 未授权: {reason}")
+        app.logger.warning("JWT 未授权: %s", reason)
         return {'error': f'缺少认证令牌: {reason}'}, 401
-    
+
     @jwt.invalid_token_loader
     def invalid_token_callback(reason):
-        print(f"[JWT ERROR] 无效令牌: {reason}")
+        app.logger.warning("JWT 无效令牌: %s", reason)
         return {'error': f'无效的令牌: {reason}'}, 401
-    
+
     @jwt.expired_token_loader
     def expired_token_callback(jwt_header, jwt_payload):
-        print(f"[JWT ERROR] 令牌过期")
+        app.logger.info("JWT 令牌过期")
         return {'error': '令牌已过期'}, 401
-    
+
     @jwt.needs_fresh_token_loader
     def needs_fresh_token_callback(jwt_header, jwt_payload):
-        print(f"[JWT ERROR] 需要新鲜令牌")
+        app.logger.warning("JWT 需要新鲜令牌")
         return {'error': '需要新鲜令牌'}, 401
-    
+
     @jwt.revoked_token_loader
     def revoked_token_callback(jwt_header, jwt_payload):
-        print(f"[JWT ERROR] 令牌已撤销")
+        app.logger.warning("JWT 令牌已撤销")
         return {'error': '令牌已撤销'}, 401
     
-    # 请求日志
+    # 请求日志（默认关闭，避免输出敏感认证信息）
     @app.before_request
     def log_request():
-        if request.path.startswith('/api/'):
-            auth_header = request.headers.get('Authorization', 'None')
-            print(f"[REQUEST] {request.method} {request.path}")
-            print(f"[REQUEST] Authorization: {auth_header[:50]}..." if auth_header != 'None' else f"[REQUEST] Authorization: None")
+        if app.config['DEBUG_API_LOGS'] and request.path.startswith('/api/'):
+            has_auth = 'yes' if request.headers.get('Authorization') else 'no'
+            app.logger.debug("API 请求: %s %s auth=%s", request.method, request.path, has_auth)
     
     # 初始化数据库
     init_db(app)
@@ -79,8 +90,9 @@ def create_app():
     def serve_upload(filename):
         return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
     
-    print(f"[INIT] JWT_SECRET_KEY: {app.config['JWT_SECRET_KEY'][:30]}...")
-    
+    if app.config['DEBUG_API_LOGS']:
+        app.logger.debug("API 调试日志已开启")
+
     return app
 
 if __name__ == '__main__':

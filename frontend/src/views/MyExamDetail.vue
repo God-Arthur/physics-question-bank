@@ -103,7 +103,7 @@ import { ref, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import api from '../utils/api'
-import katex from 'katex'
+import { renderLatex } from '../utils/latex'
 
 const route = useRoute()
 const router = useRouter()
@@ -116,29 +116,6 @@ const hasScores = ref(false)
 const canViewPdf = ref(false)
 const pdfUrl = ref('')
 const generatingPdf = ref(false)
-
-// LaTeX渲染
-function renderLatex(content) {
-  if (!content) return ''
-  try {
-    const placeholders = []
-    const hold = (html) => {
-      const key = `\u0000KATEX${placeholders.length}\u0000`
-      placeholders.push(html)
-      return key
-    }
-    content = content.replace(/\$\$([\s\S]+?)\$\$/g, (match, latex) => {
-      try { return hold(katex.renderToString(latex, { throwOnError: false, displayMode: true })) } catch { return match }
-    })
-    content = content.replace(/\$([^$\n]+?)\$/g, (match, latex) => {
-      try { return hold(katex.renderToString(latex, { throwOnError: false })) } catch { return match }
-    })
-    placeholders.forEach((html, i) => {
-      content = content.split(`\u0000KATEX${i}\u0000`).join(html)
-    })
-    return content
-  } catch { return content }
-}
 
 // 获取图片URL
 function getFullImageUrl(filename) {

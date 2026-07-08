@@ -177,6 +177,11 @@ import api from '../utils/api'
 import { useAuthStore } from '../stores/auth'
 import { setPdfSessionId, clearPdfSessionId } from '../utils/uploadSession'
 
+const isDev = import.meta.env.DEV
+const debugLog = (...args) => {
+  if (isDev) console.debug(...args)
+}
+
 const router = useRouter()
 const route = useRoute()
 const authStore = useAuthStore()
@@ -397,8 +402,9 @@ async function generateAnswerPreview(timeInfo) {
 
 // 删除预览PDF
 async function deletePreview(id) {
+  if (!pdfSessionId.value || !id) return
   try {
-    await api.delete(`/pdf/preview/${id}`)
+    await api.delete(`/pdf/preview/${pdfSessionId.value}/${id}`)
   } catch (error) {
     // 忽略删除错误
   }
@@ -420,27 +426,27 @@ async function cleanupPdfSession() {
 }
 
 async function publishPaper() {
-  console.log('[PaperCompose] publishPaper called, class_id:', form.class_id)
+  debugLog('[PaperCompose] publishPaper called, class_id:', form.class_id)
   if (!form.class_id) {
     ElMessage.warning('请先选择考试班级')
     return
   }
   try {
-    console.log('[PaperCompose] showing confirm dialog...')
+    debugLog('[PaperCompose] showing confirm dialog...')
     await ElMessageBox.confirm(
       '发布后班级内的学生将能看到此考试，确定要发布吗？',
       '确认发布',
       { confirmButtonText: '确定发布', cancelButtonText: '取消', type: 'warning' }
     )
-    console.log('[PaperCompose] user confirmed')
+    debugLog('[PaperCompose] user confirmed')
   } catch (err) {
-    console.log('[PaperCompose] dialog rejected, err:', err)
+    debugLog('[PaperCompose] dialog rejected, err:', err)
     return
   }
 
   publishing.value = true
   try {
-    console.log('[PaperCompose] saving paper...')
+    debugLog('[PaperCompose] saving paper...')
     // 先保存试卷
     const paperData = {
       title: form.title,
@@ -454,9 +460,9 @@ async function publishPaper() {
         order: index + 1
       }))
     }
-    console.log('[PaperCompose] paperData:', paperData)
+    debugLog('[PaperCompose] paperData:', paperData)
     await api.put(`/papers/${paperId.value}`, paperData)
-    console.log('[PaperCompose] paper saved, now publishing...')
+    debugLog('[PaperCompose] paper saved, now publishing...')
 
     // 然后发布
     await api.post(`/papers/${paperId.value}/publish`, {
@@ -466,7 +472,7 @@ async function publishPaper() {
       end_time: form.end_time,
       allow_view_after_exam: form.allow_view_after_exam
     })
-    console.log('[PaperCompose] published successfully')
+    debugLog('[PaperCompose] published successfully')
     ElMessage.success('发布成功')
     // 跳转到试卷列表
     router.push('/papers')
@@ -493,7 +499,7 @@ function goBack() {
 
 
 async function savePaper() {
-  console.log('[PaperCompose] savePaper clicked')
+  debugLog('[PaperCompose] savePaper clicked')
   if (selectedQuestions.value.length === 0) {
     ElMessage.warning('请至少选择一道题目')
     return

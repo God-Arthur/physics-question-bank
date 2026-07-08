@@ -13,6 +13,10 @@ import shutil
 import uuid
 import threading
 import time
+import logging
+
+
+logger = logging.getLogger(__name__)
 
 
 def get_pdf_session_base(app):
@@ -89,8 +93,8 @@ def cleanup_expired_pdf_sessions(app, max_age_seconds=600):
                     # 无法读取元信息，直接清理
                     shutil.rmtree(session_dir)
                     count += 1
-    except Exception as e:
-        print(f"[PDF Session] 清理过期会话失败: {e}")
+    except Exception:
+        logger.exception("清理过期 PDF 预览会话失败")
     return count
 
 
@@ -102,10 +106,10 @@ def start_pdf_session_cleanup_thread(app, interval_seconds=300, max_age_seconds=
             try:
                 count = cleanup_expired_pdf_sessions(app, max_age_seconds)
                 if count > 0:
-                    print(f"[PDF Session] 定期清理了 {count} 个过期PDF预览会话")
-            except Exception as e:
-                print(f"[PDF Session] 定期清理失败: {e}")
+                    logger.info("定期清理了 %s 个过期 PDF 预览会话", count)
+            except Exception:
+                logger.exception("定期清理 PDF 预览会话失败")
 
     thread = threading.Thread(target=cleanup_loop, daemon=True)
     thread.start()
-    print(f"[PDF Session] 定期清理线程已启动（每{interval_seconds}秒，{max_age_seconds}秒过期）")
+    logger.info("PDF 预览会话定期清理线程已启动（每%s秒，%s秒过期）", interval_seconds, max_age_seconds)

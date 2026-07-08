@@ -358,7 +358,7 @@ import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../utils/api'
 import { useAuthStore } from '../stores/auth'
-import katex from 'katex'
+import { renderLatex } from '../utils/latex'
 
 const router = useRouter()
 const authStore = useAuthStore()
@@ -568,7 +568,11 @@ async function batchDeletePapers() {
     )
     
     // 执行删除
+    const selectedPaperKeys = selectedPapers.value
+      .map(paperId => groups.value.find(g => g.paper_id === paperId)?.paper_key)
+      .filter(Boolean)
     await api.post('/questions/batch-delete', {
+      paper_keys: selectedPaperKeys,
       paper_ids: selectedPapers.value
     })
     
@@ -1038,48 +1042,6 @@ function truncateContent(content) {
   let text = content.replace(/\$\$?/g, '').replace(/\\[a-zA-Z]+/g, '')
   text = text.replace(/[{}]/g, '')
   return text.length > 100 ? text.substring(0, 100) + '...' : text
-}
-
-function renderLatex(content) {
-  if (!content) return ''
-
-  try {
-    // 不替换换行，避免破坏 KaTeX 生成的 HTML/SVG
-
-    const placeholders = []
-    const hold = (html) => {
-      const key = `\u0000KATEX${placeholders.length}\u0000`
-      placeholders.push(html)
-      return key
-    }
-
-    // 先处理块级公式 $$...$$，避免被行内正则吞掉
-    content = content.replace(/\$\$([\s\S]+?)\$\$/g, (match, latex) => {
-      try {
-        return hold(katex.renderToString(latex, { throwOnError: false, displayMode: true }))
-      } catch {
-        return match
-      }
-    })
-
-    // 再处理行内公式 $...$
-    content = content.replace(/\$([^$\n]+?)\$/g, (match, latex) => {
-      try {
-        return hold(katex.renderToString(latex, { throwOnError: false }))
-      } catch {
-        return match
-      }
-    })
-
-    // 还原占位符
-    placeholders.forEach((html, i) => {
-      content = content.split(`\u0000KATEX${i}\u0000`).join(html)
-    })
-
-    return content
-  } catch {
-    return content
-  }
 }
 
 // 标签映射

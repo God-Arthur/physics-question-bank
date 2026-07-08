@@ -22,7 +22,7 @@ const routes = [
         path: 'questions',
         name: 'Questions',
         component: () => import('../views/Questions.vue'),
-        meta: { title: '题库' }
+        meta: { title: '题库', roles: ['admin', 'teacher'] }
       },
       {
         path: 'questions/:uuid',
@@ -34,7 +34,7 @@ const routes = [
         path: 'questions/create',
         name: 'QuestionCreate',
         component: () => import('../views/QuestionEdit.vue'),
-        meta: { title: '添加题目' }
+        meta: { title: '添加题目', roles: ['admin', 'teacher'] }
       },
       {
         path: 'import',
@@ -46,13 +46,13 @@ const routes = [
         path: 'questions/:id/edit',
         name: 'QuestionEdit',
         component: () => import('../views/QuestionEdit.vue'),
-        meta: { title: '编辑题目' }
+        meta: { title: '编辑题目', roles: ['admin', 'teacher'] }
       },
       {
         path: 'questions/compose',
         name: 'PaperCompose',
         component: () => import('../views/PaperCompose.vue'),
-        meta: { title: '新建试卷' }
+        meta: { title: '新建试卷', roles: ['admin', 'teacher'] }
       },
       {
         path: 'papers',
@@ -64,26 +64,26 @@ const routes = [
         path: 'my-exams',
         name: 'MyExams',
         component: () => import('../views/MyExams.vue'),
-        meta: { title: '我的考试' }
+        meta: { title: '我的考试', roles: ['student'] }
       },
       {
         path: 'my-exams/:publishId',
         name: 'MyExamDetail',
         component: () => import('../views/MyExamDetail.vue'),
-        meta: { title: '考试详情' }
+        meta: { title: '考试详情', roles: ['student'] }
       },
       {
         path: 'papers/:id/edit',
         name: 'PaperEdit',
         component: () => import('../views/PaperCompose.vue'),
-        meta: { title: '编辑试卷' }
+        meta: { title: '编辑试卷', roles: ['admin', 'teacher'] }
       },
 
       {
         path: 'institutes',
         name: 'Institutes',
         component: () => import('../views/Institutes.vue'),
-        meta: { title: '机构管理' }
+        meta: { title: '机构管理', roles: ['admin', 'teacher'] }
       },
       {
         path: 'classes',
@@ -107,7 +107,7 @@ const routes = [
         path: 'classes/:classId/exams/:examId/scores',
         name: 'PaperScore',
         component: () => import('../views/PaperScore.vue'),
-        meta: { title: '成绩登记' }
+        meta: { title: '成绩登记', roles: ['admin', 'teacher'] }
       },
       {
         path: 'users',
@@ -119,7 +119,7 @@ const routes = [
         path: 'account-settings',
         name: 'AccountSettings',
         component: () => import('../views/AccountSettings.vue'),
-        meta: { title: '账号设置' }
+        meta: { title: '账号设置', roles: ['admin', 'teacher', 'student'] }
       }
     ]
   }
@@ -131,7 +131,7 @@ const router = createRouter({
 })
 
 // 路由守卫
-router.beforeEach((to, from, next) => {
+router.beforeEach(async (to, from, next) => {
   const authStore = useAuthStore()
   
   // 离开批量导入/单题编辑/试卷创建页面时，清理上传会话和PDF预览会话（作为安全兜底）
@@ -145,6 +145,20 @@ router.beforeEach((to, from, next) => {
     next('/login')
   } else if (to.path === '/login' && authStore.isLoggedIn) {
     next('/')
+  } else if (to.meta.roles?.length) {
+    try {
+      if (!authStore.user) {
+        await authStore.fetchUser()
+      }
+      if (to.meta.roles.includes(authStore.userRole)) {
+        next()
+      } else {
+        next('/')
+      }
+    } catch {
+      authStore.logout()
+      next('/login')
+    }
   } else {
     next()
   }

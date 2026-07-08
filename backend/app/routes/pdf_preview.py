@@ -148,6 +148,26 @@ def get_preview(session_id, preview_id):
         return jsonify({'error': 'PDF编译失败，请检查 xelatex 是否安装'}), 500
 
 
+@pdf_preview_bp.route('/preview/<session_id>/<preview_id>', methods=['DELETE'])
+@jwt_required()
+def delete_preview(session_id, preview_id):
+    """删除单个预览文件及其临时编译产物。"""
+    app = current_app._get_current_object()
+    session_dir = get_pdf_session_dir(app, session_id)
+    if not session_dir:
+        return jsonify({'message': '预览文件已清理'})
+
+    for suffix in ('.tex', '_temp.pdf', '.aux', '.log', '.out'):
+        file_path = os.path.join(session_dir, f'{preview_id}{suffix}')
+        if os.path.exists(file_path):
+            try:
+                os.remove(file_path)
+            except OSError:
+                pass
+
+    return jsonify({'message': '预览文件已清理'})
+
+
 @pdf_preview_bp.route('/answer-preview', methods=['POST'])
 @jwt_required()
 def create_answer_preview():
@@ -229,7 +249,7 @@ def auto_cleanup_on_startup():
             app = current_app._get_current_object()
             count = cleanup_expired_pdf_sessions(app, max_age_seconds=600)
             if count > 0:
-                print(f"[PDF Preview] 启动时清理了 {count} 个过期PDF预览会话")
+                current_app.logger.info("启动时清理了 %s 个过期 PDF 预览会话", count)
             start_pdf_session_cleanup_thread(app, interval_seconds=300, max_age_seconds=600)
         except RuntimeError:
             # 应用上下文可能不可用，忽略

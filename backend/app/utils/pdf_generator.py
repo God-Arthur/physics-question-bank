@@ -5,6 +5,10 @@ import re
 import shutil
 import platform
 import ast
+import logging
+
+
+logger = logging.getLogger(__name__)
 
 def find_xelatex():
     """查找 xelatex 可执行文件"""
@@ -39,9 +43,9 @@ def find_xelatex():
 # 全局 xelatex 路径
 XELATEX_PATH = find_xelatex()
 if XELATEX_PATH:
-    print(f"[PDF] 找到 xelatex: {XELATEX_PATH}")
+    logger.info("找到 xelatex: %s", XELATEX_PATH)
 else:
-    print("[PDF] 未找到 xelatex，PDF 生成将不可用")
+    logger.warning("未找到 xelatex，PDF 生成将不可用")
 
 def escape_latex(text):
     """转义 LaTeX 特殊字符（保留公式）"""
@@ -386,7 +390,7 @@ def compile_latex_to_pdf(latex_content, output_path, tex_path=None):
     """
 
     if not XELATEX_PATH:
-        print("[PDF] xelatex 未找到，无法生成 PDF")
+        logger.warning("xelatex 未找到，无法生成 PDF")
         return False
 
     # 判断是否使用 Windows 的 xelatex.exe
@@ -409,7 +413,7 @@ def compile_latex_to_pdf(latex_content, output_path, tex_path=None):
     with open(tex_file, 'w', encoding='utf-8') as f:
         f.write(latex_content)
 
-    print(f"[PDF] LaTeX 文件已写入: {tex_file}")
+    logger.debug("LaTeX 文件已写入: %s", tex_file)
 
     if is_windows_exe:
         # 方法1：通过 PowerShell 执行 xelatex
@@ -427,7 +431,7 @@ def compile_latex_to_pdf(latex_content, output_path, tex_path=None):
         xelatex_cmd = f'& "{XELATEX_PATH}" -interaction=nonstopmode -output-directory "{win_temp_dir}" "{win_tex_file}"'
         cmd = ['powershell.exe', '-NoProfile', '-Command', xelatex_cmd]
 
-        print(f"[PDF] 执行命令: {' '.join(cmd)}")
+        logger.debug("执行命令: %s", ' '.join(cmd))
 
         try:
             result = subprocess.run(
@@ -437,11 +441,11 @@ def compile_latex_to_pdf(latex_content, output_path, tex_path=None):
                 timeout=120
             )
 
-            print(f"[PDF] 返回码: {result.returncode}")
+            logger.debug("xelatex 返回码: %s", result.returncode)
             if result.stdout:
-                print(f"[PDF] stdout: {result.stdout[-500:]}")
+                logger.debug("xelatex stdout: %s", result.stdout[-500:])
             if result.stderr:
-                print(f"[PDF] stderr: {result.stderr[-500:]}")
+                logger.debug("xelatex stderr: %s", result.stderr[-500:])
 
             # 检查 PDF 是否生成
             win_pdf_file = os.path.join(win_temp_dir, 'paper.pdf')
@@ -449,19 +453,18 @@ def compile_latex_to_pdf(latex_content, output_path, tex_path=None):
                 # 复制 PDF 到 WSL 输出路径
                 os.makedirs(os.path.dirname(output_path), exist_ok=True)
                 shutil.copy(win_pdf_file, output_path)
-                print(f"[PDF] PDF 生成成功: {output_path}")
+                logger.info("PDF 生成成功: %s", output_path)
                 return True
             else:
-                print(f"[PDF] PDF 文件未生成: {win_pdf_file}")
-                # 列出目录内容
-                print(f"[PDF] 目录内容: {os.listdir(win_temp_dir)}")
+                logger.error("PDF 文件未生成: %s", win_pdf_file)
+                logger.debug("PDF 临时目录内容: %s", os.listdir(win_temp_dir))
                 return False
 
         except subprocess.TimeoutExpired:
-            print(f"[PDF] xelatex 编译超时")
+            logger.error("xelatex 编译超时")
             return False
-        except Exception as e:
-            print(f"[PDF] xelatex 编译异常: {e}")
+        except Exception:
+            logger.exception("xelatex 编译异常")
             return False
         finally:
             # 保留 .tex 文件，只清理 Windows 临时目录
@@ -475,7 +478,7 @@ def compile_latex_to_pdf(latex_content, output_path, tex_path=None):
             tex_file
         ]
 
-        print(f"[PDF] 执行命令: {' '.join(cmd[:3])}...")
+        logger.debug("执行命令: %s...", ' '.join(cmd[:3]))
 
         try:
             # 第一次编译
@@ -487,7 +490,7 @@ def compile_latex_to_pdf(latex_content, output_path, tex_path=None):
                 encoding='utf-8',
                 errors='replace'
             )
-            print(f"[PDF] 第一次编译完成，返回码: {result1.returncode}")
+            logger.debug("第一次编译完成，返回码: %s", result1.returncode)
 
             # 第二次编译（为了正确显示总页数）
             result2 = subprocess.run(
@@ -498,7 +501,7 @@ def compile_latex_to_pdf(latex_content, output_path, tex_path=None):
                 encoding='utf-8',
                 errors='replace'
             )
-            print(f"[PDF] 第二次编译完成，返回码: {result2.returncode}")
+            logger.debug("第二次编译完成，返回码: %s", result2.returncode)
 
             # 检查 PDF 是否生成（即使有警告，xelatex 也可能成功生成 PDF）
             # PDF 文件名与 .tex 文件名相同（去掉 .tex 后缀加 .pdf）
@@ -508,14 +511,14 @@ def compile_latex_to_pdf(latex_content, output_path, tex_path=None):
                 if pdf_file != output_path:
                     os.makedirs(os.path.dirname(output_path), exist_ok=True)
                     shutil.copy(pdf_file, output_path)
-                    print(f"[PDF] PDF 生成成功: {output_path}")
+                    logger.info("PDF 生成成功: %s", output_path)
                 else:
-                    print(f"[PDF] PDF 生成成功: {output_path}")
+                    logger.info("PDF 生成成功: %s", output_path)
                 return True
 
             # PDF 未生成，说明真正失败了
             if result2.returncode != 0:
-                print(f"[PDF] xelatex 编译失败 (返回码: {result2.returncode})")
+                logger.error("xelatex 编译失败，返回码: %s", result2.returncode)
                 # 尝试读取 log 文件
                 log_file = os.path.join(temp_dir, f'{tex_basename}.log')
                 if os.path.exists(log_file):
@@ -523,17 +526,17 @@ def compile_latex_to_pdf(latex_content, output_path, tex_path=None):
                         log_content = f.read()
                         error_lines = [l for l in log_content.split('\n') if '!' in l or 'error' in l.lower()]
                         if error_lines:
-                            print(f"[PDF] LaTeX 错误: {'; '.join(error_lines[-10:])}")
+                            logger.error("LaTeX 错误: %s", '; '.join(error_lines[-10:]))
                 return False
 
-            print(f"[PDF] PDF 文件未生成")
+            logger.error("PDF 文件未生成")
             return False
 
         except subprocess.TimeoutExpired:
-            print(f"[PDF] xelatex 编译超时")
+            logger.error("xelatex 编译超时")
             return False
-        except Exception as e:
-            print(f"[PDF] xelatex 编译异常: {e}")
+        except Exception:
+            logger.exception("xelatex 编译异常")
             return False
         finally:
             # 保留 .tex 文件，不清理 temp_dir

@@ -176,7 +176,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../utils/api'
 import { useAuthStore } from '../stores/auth'
-import katex from 'katex'
+import { renderLatex } from '../utils/latex'
 
 const route = useRoute()
 const router = useRouter()
@@ -272,49 +272,6 @@ const paperInfo = computed(() => {
     difficulty: Math.round(difficulty * 100) / 100
   }
 })
-
-// LaTeX渲染
-function renderLatex(content) {
-  if (!content) return ''
-
-  try {
-    // 不替换换行，避免破坏 KaTeX 生成的 HTML/SVG
-
-    const placeholders = []
-    const hold = (html) => {
-      const key = `\u0000KATEX${placeholders.length}\u0000`
-      placeholders.push(html)
-      return key
-    }
-
-    // 先处理块级公式 $$...$$，避免被行内正则吞掉
-    content = content.replace(/\$\$([\s\S]+?)\$\$/g, (match, latex) => {
-      try {
-        return hold(katex.renderToString(latex, { throwOnError: false, displayMode: true }))
-      } catch {
-        return match
-      }
-    })
-
-    // 再处理行内公式 $...$
-    content = content.replace(/\$([^$\n]+?)\$/g, (match, latex) => {
-      try {
-        return hold(katex.renderToString(latex, { throwOnError: false }))
-      } catch {
-        return match
-      }
-    })
-
-    // 还原占位符
-    placeholders.forEach((html, i) => {
-      content = content.split(`\u0000KATEX${i}\u0000`).join(html)
-    })
-
-    return content
-  } catch {
-    return content
-  }
-}
 
 function questionTypeLabel(type) {
   const map = { theory: '理论题', experiment: '实验理论题' }
