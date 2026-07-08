@@ -105,7 +105,7 @@ with app.app_context():
 
 4. **访问应用**
    - 打开浏览器访问 http://localhost
-   - 默认管理员账号：admin / admin123
+   - 默认管理员账号：admin / admin1906
 
 #### 常见问题
 
@@ -166,7 +166,7 @@ git clone <repository-url>
 
 4. **访问应用**
    - 打开浏览器访问 http://localhost
-   - 默认管理员账号：admin / admin123
+   - 默认管理员账号：admin / admin1906
 
 #### 常见问题
 
@@ -250,7 +250,7 @@ netstat -ano | findstr :5000
 
 3. **访问应用**
    - 打开浏览器访问 http://localhost
-   - 默认管理员账号：admin / admin123
+   - 默认管理员账号：admin / admin1906
 
 #### 安装步骤（CentOS/RHEL/Fedora）
 
@@ -463,9 +463,9 @@ docker-compose exec -T db psql -U postgres -d physics_db < backup.sql
 
 | 角色 | 用户名 | 密码 |
 |------|--------|------|
-| 管理员 | admin | admin123 |
-| 教师 | teacher | teacher123 |
-| 学生 | student | student123 |
+| 管理员 | admin | admin1906 |
+
+教师和学生账号由管理员在系统内创建，账号自动编号，初始密码与账号相同。
 
 > ⚠️ 生产环境请务必修改默认密码！
 

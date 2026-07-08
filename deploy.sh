@@ -92,9 +92,8 @@ echo -e "  停止服务: docker-compose down"
 echo -e "  重启服务: docker-compose restart"
 echo ""
 echo -e "\033[33m默认账号:\033[0m"
-echo -e "  管理员: admin / admin123"
-echo -e "  教师: teacher / teacher123"
-echo -e "  学生: student / student123"
+echo -e "  管理员: admin / admin1906"
+echo -e "  教师和学生账号由管理员在系统内创建"
 #!/bin/bash
 
 # 物理题库系统部署脚本 (macOS / Linux)
@@ -189,6 +188,5 @@ echo -e "  停止服务: docker-compose down"
 echo -e "  重启服务: docker-compose restart"
 echo ""
 echo -e "\033[33m默认账号:\033[0m"
-echo -e "  管理员: admin / admin123"
-echo -e "  教师: teacher / teacher123"
-echo -e "  学生: student /
+echo -e "  管理员: admin / admin1906"
+echo -e "  教师和学生账号由管理员在系统内创建"

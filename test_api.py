@@ -6,7 +6,7 @@ import json
 try:
     response = requests.post(
         'http://127.0.0.1:5000/api/auth/login',
-        json={'username': 'admin', 'password': 'admin123'},
+        json={'username': 'admin', 'password': 'admin1906'},
         timeout=5
     )
     print(f"Status Code: {response.status_code}")

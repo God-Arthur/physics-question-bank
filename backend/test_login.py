@@ -3,7 +3,7 @@ import requests
 import json
 
 url = 'http://localhost:5000/api/auth/login'
-data = {'username': 'admin', 'password': 'admin123'}
+data = {'username': 'admin', 'password': 'admin1906'}
 
 try:
     response = requests.post(url, json=data)

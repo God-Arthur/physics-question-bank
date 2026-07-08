@@ -40,11 +40,11 @@ def init_data():
                 role='admin',
                 real_name='管理员'
             )
-            admin.set_password('admin123')
+            admin.set_password('admin1906')
             db.session.add(admin)
             
             print("默认用户创建完成:")
-            print("  管理员: admin / admin123")
+            print("  管理员: admin / admin1906")
         
         # 检查是否已有机构
         if Institute.query.count() == 0:

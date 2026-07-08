@@ -14,7 +14,7 @@ try:
     with app.test_client() as client:
         # 测试登录
         response = client.post('/api/auth/login', 
-                              json={'username': 'admin', 'password': 'admin123'})
+                              json={'username': 'admin', 'password': 'admin1906'})
         print(f"✓ 登录接口状态: {response.status_code}")
         if response.status_code == 200:
             data = response.get_json()

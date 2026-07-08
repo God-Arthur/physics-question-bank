@@ -107,9 +107,8 @@ Write-Host "  停止服务: docker-compose down" -ForegroundColor White
 Write-Host "  重启服务: docker-compose restart" -ForegroundColor White
 Write-Host ""
 Write-Host "默认账号:" -ForegroundColor Yellow
-Write-Host "  管理员: admin / admin123" -ForegroundColor White
-Write-Host "  教师: teacher / teacher123" -ForegroundColor White
-Write-Host "  学生: student / student123" -ForegroundColor White
+Write-Host "  管理员: admin / admin1906" -ForegroundColor White
+Write-Host "  教师和学生账号由管理员在系统内创建" -ForegroundColor White
 # 物理题库系统部署脚本 (Windows PowerShell)
 
 Write-Host "=== 开始构建物理题库系统 ===" -ForegroundColor Green
@@ -219,6 +218,5 @@ Write-Host "  停止服务: docker-compose down" -ForegroundColor White
 Write-Host "  重启服务: docker-compose restart" -ForegroundColor White
 Write-Host ""
 Write-Host "默认账号:" -ForegroundColor Yellow
-Write-Host "  管理员: admin / admin123" -ForegroundColor White
-Write-Host "  教师: teacher / teacher123" -ForegroundColor White
-Write-Host "  学生: student / student123" -ForegroundColor White
+Write-Host "  管理员: admin / admin1906" -ForegroundColor White
+Write-Host "  教师和学生账号由管理员在系统内创建" -ForegroundColor White

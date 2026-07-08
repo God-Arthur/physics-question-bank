@@ -14,19 +14,19 @@ if row:
     print(f'Password hash: {row[2]}')
     
     # 测试密码验证
-    result = check_password_hash(row[2], 'admin123')
+    result = check_password_hash(row[2], 'admin1906')
     print(f'Password check result: {result}')
     
     # 如果验证失败，重新设置密码
     if not result:
         print('\nPassword hash is invalid. Resetting...')
-        new_hash = generate_password_hash('admin123')
+        new_hash = generate_password_hash('admin1906')
         c.execute('UPDATE users SET password_hash=? WHERE username="admin"', (new_hash,))
         conn.commit()
         print(f'New hash: {new_hash}')
         
         # 再次验证
-        result2 = check_password_hash(new_hash, 'admin123')
+        result2 = check_password_hash(new_hash, 'admin1906')
         print(f'New password check result: {result2}')
 
 conn.close()
