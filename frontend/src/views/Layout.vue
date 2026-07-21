@@ -46,7 +46,7 @@
       
       <div class="sidebar-footer">
         <div class="dev-info">
-          <div>由 张三 开发</div>
+          <div>由Twess开发</div>
           <div class="email-line">
             <el-icon><Message /></el-icon>
             <span>redaunt06@gmail.com</span>
