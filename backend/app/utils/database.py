@@ -1,8 +1,15 @@
 from flask_sqlalchemy import SQLAlchemy
+from sqlalchemy import event
 import os
 
 
 db = SQLAlchemy()
+
+
+def _enable_sqlite_foreign_keys(dbapi_connection, _connection_record):
+    cursor = dbapi_connection.cursor()
+    cursor.execute('PRAGMA foreign_keys=ON')
+    cursor.close()
 
 
 def init_db(app):
@@ -20,4 +27,10 @@ def init_db(app):
     db.init_app(app)
 
     with app.app_context():
+        if db.engine.dialect.name == 'sqlite' and not event.contains(
+            db.engine, 'connect', _enable_sqlite_foreign_keys
+        ):
+            event.listen(db.engine, 'connect', _enable_sqlite_foreign_keys)
         db.create_all()
+        from app.seed import ensure_seed_data
+        ensure_seed_data()

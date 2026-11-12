@@ -57,8 +57,8 @@ const form = reactive({
 })
 
 const rules = {
-  username: [{ message: '请输入账号', trigger: 'blur' }],
-  password: [{ message: '请输入密码', trigger: 'blur' }]
+  username: [{ required: true, message: '请输入账号', trigger: 'blur' }],
+  password: [{ required: true, message: '请输入密码', trigger: 'blur' }]
 }
 
 async function handleLogin() {

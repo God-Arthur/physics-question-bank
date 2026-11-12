@@ -26,7 +26,7 @@ def create_institute():
     user_id = get_jwt_identity()
     current_user = User.query.get(int(user_id))
     
-    if not current_user or current_user.role != 'admin':
+    if not current_user or current_user.role not in ('admin', 'teacher'):
         return jsonify({'error': '权限不足'}), 403
     
     data = request.get_json()
@@ -62,7 +62,7 @@ def update_institute(institute_id):
     user_id = get_jwt_identity()
     current_user = User.query.get(int(user_id))
     
-    if not current_user or current_user.role != 'admin':
+    if not current_user or current_user.role not in ('admin', 'teacher'):
         return jsonify({'error': '权限不足'}), 403
     
     institute = Institute.query.get(institute_id)
@@ -98,7 +98,7 @@ def delete_institute(institute_id):
     user_id = get_jwt_identity()
     current_user = User.query.get(int(user_id))
     
-    if not current_user or current_user.role != 'admin':
+    if not current_user or current_user.role not in ('admin', 'teacher'):
         return jsonify({'error': '权限不足'}), 403
     
     institute = Institute.query.get(institute_id)

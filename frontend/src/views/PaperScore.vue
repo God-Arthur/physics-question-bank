@@ -121,21 +121,23 @@ const students = ref([])
 const tableData = computed(() => {
   if (students.value.length === 0) return []
 
+  const participants = students.value.filter(s => !s.absent)
   const avgScores = {}
   let avgTotal = 0
+  const divisor = participants.length || 1
 
   for (const q of questions.value) {
     let sum = 0
-    for (const s of students.value) {
+    for (const s of participants) {
       sum += (s.scores[q.question_id] || 0)
     }
-    avgScores[q.question_id] = sum / students.value.length
+    avgScores[q.question_id] = participants.length ? sum / divisor : 0
   }
 
-  for (const s of students.value) {
+  for (const s of participants) {
     avgTotal += s.total_score
   }
-  avgTotal = avgTotal / students.value.length
+  avgTotal = participants.length ? avgTotal / divisor : 0
 
   const avgRow = {
     student_name: '平均分',
@@ -150,7 +152,7 @@ const tableData = computed(() => {
 // 计算排名（按总分降序）
 const rankings = computed(() => {
   return [...students.value]
-    .filter(s => s.total_score > 0)
+    .filter(s => !s.absent)
     .sort((a, b) => b.total_score - a.total_score)
 })
 
@@ -180,7 +182,7 @@ async function loadData() {
     questions.value = res.questions
     students.value = res.students.map(s => ({
       ...s,
-      absent: false  // 初始化未参加标记
+      absent: !!s.absent
     }))
   } catch (error) {
     ElMessage.error('加载数据失败')
@@ -190,20 +192,29 @@ async function loadData() {
   }
 }
 
+async function persistScores() {
+  for (const student of students.value) {
+    if (student.absent) {
+      await api.post(`/papers/${paperInfo.value.id}/students/${student.student_id}/scores`, {
+        absent: true
+      })
+      continue
+    }
+    const scores_data = questions.value.map(q => ({
+      question_id: q.question_id,
+      score: student.scores[q.question_id] || 0,
+      max_score: q.max_score
+    }))
+    await api.post(`/papers/${paperInfo.value.id}/students/${student.student_id}/scores`, {
+      scores: scores_data
+    })
+  }
+}
+
 async function saveScores() {
   saving.value = true
   try {
-    for (const student of students.value) {
-      const scores_data = questions.value.map(q => ({
-        question_id: q.question_id,
-        score: student.scores[q.question_id] || 0,
-        max_score: q.max_score
-      }))
-
-      await api.post(`/papers/${paperInfo.value.id}/students/${student.student_id}/scores`, {
-        scores: scores_data
-      })
-    }
+    await persistScores()
     ElMessage.success('成绩保存成功')
   } catch (error) {
     ElMessage.error('保存失败')
@@ -225,6 +236,7 @@ async function finishScoring() {
 
   finishing.value = true
   try {
+    await persistScores()
     const absentIds = students.value
       .filter(s => s.absent)
       .map(s => s.student_id)

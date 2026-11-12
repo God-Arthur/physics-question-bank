@@ -6,6 +6,7 @@ import numpy as np
 from datetime import datetime
 from app.models import now_bjt
 from app.utils.database import db
+from app.utils.authz import require_roles, require_user
 from app.models import Paper, Question, User, PaperStudent, StudentScore, Class, ClassStudent, PaperPublish, ClassExam, ExamScoreRecord
 from app.utils.pdf_generator import generate_paper_pdf, generate_latex_template, generate_answer_latex_template
 from app.utils.pdf_preview_session import get_tex_path, cleanup_pdf_session
@@ -14,7 +15,8 @@ from app.routes.classes import get_exam_status
 # 逻辑斯蒂函数
 def logistic(x, a, b, c, d):
     """逻辑斯蒂函数: y = a + (b-a) / (1 + exp(-c*(x-d)))"""
-    return a + (b - a) / (1 + np.exp(-c * (x - d)))
+    z = np.clip(-c * (np.asarray(x, dtype=float) - d), -60, 60)
+    return a + (b - a) / (1 + np.exp(z))
 
 
 def build_difficulty_mapping(a, b, c, d):
@@ -25,19 +27,155 @@ def build_difficulty_mapping(a, b, c, d):
         try:
             # 反解逻辑斯蒂函数: x = d - ln((b-y)/(y-a))/c
             # 当 y 超出 (b, a) 范围时，clamp 到边界值
-            y = np.clip(sr, min(a, b) + 0.001, max(a, b) - 0.001)
+            lo = min(a, b) + 0.001
+            hi = max(a, b) - 0.001
+            if not np.isfinite(lo) or not np.isfinite(hi) or lo >= hi or c == 0:
+                raise ValueError('degenerate logistic')
+            y = float(np.clip(sr, lo, hi))
             difficulty = d - np.log((b - y) / (y - a)) / c
+            difficulty = float(difficulty)
+            if not np.isfinite(difficulty):
+                raise ValueError('non-finite difficulty')
             difficulty = max(0.1, min(5.0, difficulty))
             mapping.append({
                 'score_rate': int(sr * 100),
                 'difficulty': round(float(difficulty), 2)
             })
-        except (ValueError, ZeroDivisionError):
+        except (ValueError, ZeroDivisionError, FloatingPointError):
             mapping.append({
                 'score_rate': int(sr * 100),
                 'difficulty': None
             })
     return mapping
+
+
+def _parse_date(value):
+    if not value:
+        return None
+    try:
+        return datetime.strptime(str(value)[:10], '%Y-%m-%d').date()
+    except ValueError:
+        return None
+
+
+def _time_info_from_data(data):
+    exam_date = _parse_date(data.get('exam_date'))
+    if not exam_date:
+        return '（考试时间）'
+    date_str = f"{exam_date.year}年{exam_date.month}月{exam_date.day}日"
+    start = str(data.get('start_time') or '')[:5]
+    end = str(data.get('end_time') or '')[:5]
+    if start and end:
+        return f"（{date_str}{start}-{end}）"
+    if start:
+        return f"（{date_str}{start}）"
+    return f"（{date_str}）"
+
+
+def _coerce_score(value, default=10):
+    try:
+        score = int(round(float(value)))
+    except (TypeError, ValueError):
+        score = default
+    return score
+
+
+def _can_score(user, paper, student_id=None):
+    """管理员、试卷创建者，以及考试所在班级的教师可以登记成绩。"""
+    if not user or not paper:
+        return False
+    if user.role == 'admin' or paper.created_by == user.id:
+        return True
+    if user.role != 'teacher':
+        return False
+    class_ids = {row.class_id for row in PaperPublish.query.filter_by(paper_id=paper.id).all()}
+    if paper.class_id:
+        class_ids.add(paper.class_id)
+    class_ids.discard(None)
+    if not class_ids:
+        return False
+    owned_ids = [
+        row.id for row in Class.query.filter(
+            Class.id.in_(class_ids), Class.teacher_id == user.id
+        ).all()
+    ]
+    if not owned_ids:
+        return False
+    if student_id is None:
+        return True
+    return ClassStudent.query.filter(
+        ClassStudent.class_id.in_(owned_ids),
+        ClassStudent.student_id == student_id,
+        ClassStudent.status == 'accepted',
+    ).first() is not None
+
+
+def _adjust_question_stats(question, old_score, old_max, new_score, new_max, is_new):
+    if not question:
+        return
+    old_rate = (old_score / old_max) if (not is_new and old_max and old_score is not None) else None
+    new_rate = (new_score / new_max) if (new_max and new_score is not None) else None
+    attempts = question.total_attempts or 0
+    total_rate = question.total_score_rate or 0
+    if is_new:
+        if new_rate is None:
+            return
+        attempts += 1
+        total_rate += new_rate
+    elif old_rate is not None and new_rate is not None:
+        total_rate += new_rate - old_rate
+    elif old_rate is None and new_rate is not None:
+        attempts += 1
+        total_rate += new_rate
+    elif old_rate is not None and new_rate is None:
+        attempts = max(attempts - 1, 0)
+        total_rate -= old_rate
+    else:
+        return
+    question.total_attempts = attempts
+    question.total_score_rate = total_rate
+    question.score_data_updated = True
+
+
+def _fit_logistic(x_data, y_data):
+    """优先使用 scipy；未安装时用有界搜索，避免拟合接口直接 ImportError。"""
+    x = np.asarray(x_data, dtype=float)
+    y = np.asarray(y_data, dtype=float)
+    try:
+        from scipy.optimize import curve_fit
+        p0 = [0.95, 0.05, 1.5, 2.5]
+        bounds = ([0.7, 0.0, 0.1, 0.1], [1.0, 0.3, 10.0, 4.9])
+        popt, _ = curve_fit(logistic, x, y, p0=p0, bounds=bounds, maxfev=10000)
+        return [float(v) for v in popt]
+    except ImportError:
+        pass
+
+    lows = np.array([0.7, 0.0, 0.1, 0.1])
+    highs = np.array([1.0, 0.3, 10.0, 4.9])
+    rng = np.random.default_rng(0)
+    best = np.array([0.95, 0.05, 1.5, 2.5])
+    best_err = float(np.mean((logistic(x, *best) - y) ** 2))
+    for _ in range(3000):
+        cand = rng.uniform(lows, highs)
+        err = float(np.mean((logistic(x, *cand) - y) ** 2))
+        if err < best_err:
+            best_err = err
+            best = cand
+    step = np.array([0.02, 0.02, 0.2, 0.1])
+    for _ in range(30):
+        improved = False
+        for index in range(4):
+            for direction in (-1, 1):
+                trial = best.copy()
+                trial[index] = float(np.clip(trial[index] + direction * step[index], lows[index], highs[index]))
+                err = float(np.mean((logistic(x, *trial) - y) ** 2))
+                if err + 1e-12 < best_err:
+                    best_err = err
+                    best = trial
+                    improved = True
+        if not improved:
+            step *= 0.5
+    return [float(v) for v in best]
 
 papers_bp = Blueprint('papers', __name__)
 
@@ -64,9 +202,11 @@ def get_papers():
     if status:
         query = query.filter(Paper.status == status)
 
-    # 学生只能看到已发布的试卷
+    if not current_user:
+        return jsonify({'error': '用户不存在或登录已失效'}), 401
+    # 学生的考试入口是「我的考试」，题库试卷列表不对学生开放
     if current_user.role == 'student':
-        query = query.filter(Paper.status == 'published')
+        return jsonify({'error': '权限不足'}), 403
     
     pagination = query.order_by(Paper.created_at.desc()).paginate(
         page=page, per_page=per_page, error_out=False
@@ -129,11 +269,13 @@ def get_paper(paper_id):
 @jwt_required()
 def create_paper():
     """创建试卷"""
-    user_id = get_jwt_identity()
+    current_user, err = require_roles('admin', 'teacher')
+    if err:
+        return err
     
-    data = request.get_json()
+    data = request.get_json() or {}
     
-    if not data or not data.get('title'):
+    if not data.get('title'):
         return jsonify({'error': '试卷标题不能为空'}), 400
     
     if not data.get('questions') or len(data['questions']) == 0:
@@ -144,12 +286,12 @@ def create_paper():
     total_score = 0
     total_difficulty = 0  # 用于计算加权难度
     for item in data['questions']:
-        question = Question.query.get(item['question_id'])
+        question = Question.query.get(item.get('question_id'))
         if not question:
-            return jsonify({'error': f'题目 {item["question_id"]} 不存在'}), 400
-        score = item.get('score', 10)
+            return jsonify({'error': f'题目 {item.get("question_id")} 不存在'}), 400
+        score = _coerce_score(item.get('score', 10))
         questions_data.append({
-            'question_id': item['question_id'],
+            'question_id': question.id,
             'score': score
         })
         total_score += score
@@ -159,14 +301,7 @@ def create_paper():
 
     # 计算试卷难度系数（加权平均）
     paper_difficulty = total_difficulty / total_score if total_score > 0 else 0
-    
-    # 解析日期
-    exam_date = None
-    if data.get('exam_date'):
-        try:
-            exam_date = datetime.strptime(data['exam_date'], '%Y-%m-%d').date()
-        except:
-            pass
+    exam_date = _parse_date(data.get('exam_date'))
     
     # 读取或生成 tex 文件内容
     tex_content = None
@@ -185,42 +320,23 @@ def create_paper():
                 'score': item['score']
             })
     
-    # 生成时间信息
-    time_info = '（考试时间）'
-    if data.get('exam_date'):
-        try:
-            from datetime import datetime
-            exam_date = datetime.strptime(data['exam_date'][:10], '%Y-%m-%d')
-            date_str = f"{exam_date.year}年{exam_date.month}月{exam_date.day}日"
-            if data.get('start_time'):
-                start_time = data['start_time'][:5]
-                if data.get('end_time'):
-                    end_time = data['end_time'][:5]
-                    time_info = f"（{date_str}{start_time}-{end_time}）"
-                else:
-                    time_info = f"（{date_str}{start_time}）"
-            else:
-                time_info = f"（{date_str}）"
-        except:
-            pass
+    time_info = _time_info_from_data(data)
+    app = current_app._get_current_object()
     
     if preview_id and pdf_session_id:
-        # 从会话目录读取 tex 文件
-        tex_path = get_tex_path(current_app._get_current_object(), pdf_session_id, preview_id)
+        tex_path = get_tex_path(app, pdf_session_id, preview_id)
         if tex_path:
             with open(tex_path, 'r', encoding='utf-8') as f:
                 tex_content = f.read()
-    else:
-        # 用户未生成预览，系统自动生成试卷 tex
+    if not tex_content:
         tex_content = generate_latex_template(data['title'], time_info, full_questions)
     
     if answer_preview_id and pdf_session_id:
-        answer_tex_path = get_tex_path(current_app._get_current_object(), pdf_session_id, answer_preview_id)
+        answer_tex_path = get_tex_path(app, pdf_session_id, answer_preview_id)
         if answer_tex_path:
             with open(answer_tex_path, 'r', encoding='utf-8') as f:
                 answer_tex_content = f.read()
-    else:
-        # 用户未生成预览，系统自动生成答案 tex
+    if not answer_tex_content:
         answer_tex_content = generate_answer_latex_template(data['title'], time_info, full_questions)
     
     paper = Paper(
@@ -228,10 +344,10 @@ def create_paper():
         exam_date=exam_date,
         start_time=data.get('start_time', ''),
         end_time=data.get('end_time', ''),
-        class_id=data.get('class_id'),
+        class_id=data.get('class_id') or None,
         allow_view_after_exam=data.get('allow_view_after_exam', False),
         difficulty=paper_difficulty,
-        duration=data.get('duration', 180),  # 默认180分钟
+        duration=data.get('duration') or 180,
         total_score=data.get('total_score', total_score),
         questions_data=json.dumps(questions_data),
         tex_content=tex_content,
@@ -240,7 +356,7 @@ def create_paper():
         needs_review=data.get('needs_review', False),
         reviewer_id=data.get('reviewer_id'),
         review_note=data.get('review_note'),
-        created_by=user_id
+        created_by=current_user.id
     )
     
     db.session.add(paper)
@@ -249,7 +365,7 @@ def create_paper():
     for item in questions_data:
         question = Question.query.get(item['question_id'])
         if question:
-            question.use_count += 1
+            question.use_count = (question.use_count or 0) + 1
     
     db.session.commit()
     
@@ -264,8 +380,9 @@ def create_paper():
 @jwt_required()
 def update_paper(paper_id):
     """更新试卷"""
-    user_id = get_jwt_identity()
-    current_user = User.query.get(int(user_id))
+    current_user, err = require_user()
+    if err:
+        return err
     
     paper = Paper.query.get(paper_id)
     if not paper:
@@ -275,7 +392,7 @@ def update_paper(paper_id):
     if current_user.role != 'admin' and paper.created_by != current_user.id:
         return jsonify({'error': '权限不足'}), 403
     
-    data = request.get_json()
+    data = request.get_json() or {}
     
     if data.get('title'):
         paper.title = data['title']
@@ -303,16 +420,17 @@ def update_paper(paper_id):
         total_score = 0
         total_difficulty = 0
         for item in data['questions']:
-            question = Question.query.get(item['question_id'])
-            if question:
-                score = item.get('score', 10)
-                questions_data.append({
-                    'question_id': item['question_id'],
-                    'score': score
-                })
-                total_score += score
-                q_difficulty = question.difficulty or 0
-                total_difficulty += score * q_difficulty
+            question = Question.query.get(item.get('question_id'))
+            if not question:
+                return jsonify({'error': f'题目 {item.get("question_id")} 不存在'}), 400
+            score = _coerce_score(item.get('score', 10))
+            questions_data.append({
+                'question_id': question.id,
+                'score': score
+            })
+            total_score += score
+            q_difficulty = question.difficulty or 0
+            total_difficulty += score * q_difficulty
         
         paper.questions_data = json.dumps(questions_data)
         paper.total_score = data.get('total_score', total_score)
@@ -366,8 +484,19 @@ def delete_paper(paper_id):
         return jsonify({'error': '试卷不存在'}), 404
     
     # 只有创建者或管理员可以删除
-    if current_user.role != 'admin' and paper.created_by != current_user.id:
+    if not current_user or (current_user.role != 'admin' and paper.created_by != current_user.id):
         return jsonify({'error': '权限不足'}), 403
+
+    publish_ids = [row.id for row in PaperPublish.query.filter_by(paper_id=paper.id).all()]
+    if publish_ids:
+        ExamScoreRecord.query.filter(ExamScoreRecord.publish_id.in_(publish_ids)).delete(synchronize_session=False)
+        ClassExam.query.filter(ClassExam.publish_id.in_(publish_ids)).update(
+            {ClassExam.publish_id: None, ClassExam.paper_id: None}, synchronize_session=False
+        )
+        PaperPublish.query.filter(PaperPublish.id.in_(publish_ids)).delete(synchronize_session=False)
+    ClassExam.query.filter_by(paper_id=paper.id).update(
+        {ClassExam.paper_id: None}, synchronize_session=False
+    )
     
     db.session.delete(paper)
     db.session.commit()
@@ -379,18 +508,34 @@ def delete_paper(paper_id):
 @jwt_required()
 def export_paper_pdf(paper_id):
     """导出试卷PDF"""
-    user_id = get_jwt_identity()
-    current_user = User.query.get(int(user_id))
+    current_user, err = require_user()
+    if err:
+        return err
     
     paper = Paper.query.get(paper_id)
     if not paper:
         return jsonify({'error': '试卷不存在'}), 404
     
-    # 学生只能导出分配给自己的试卷
+    include_answer = request.args.get('include_answer', 'false').lower() == 'true'
     if current_user.role == 'student':
-        assignment = PaperStudent.query.filter_by(paper_id=paper_id, student_id=current_user.id).first()
-        if not assignment:
+        publish_id = request.args.get('publish_id', type=int)
+        publish = PaperPublish.query.get(publish_id) if publish_id else None
+        if not publish or publish.paper_id != paper.id:
             return jsonify({'error': '权限不足'}), 403
+        is_in_class = ClassStudent.query.filter_by(
+            class_id=publish.class_id, student_id=current_user.id, status='accepted'
+        ).first() is not None
+        if not is_in_class:
+            return jsonify({'error': '权限不足'}), 403
+        exam = ClassExam.query.filter_by(class_id=publish.class_id, publish_id=publish.id).first()
+        status = get_exam_status(publish)
+        allow_answers = bool(exam and exam.finished_at and publish.allow_view_after_exam and status == '已结束')
+        allow_questions = status == '进行中' or allow_answers
+        if not allow_questions:
+            return jsonify({'error': '当前不能查看试卷'}), 403
+        include_answer = allow_answers
+    elif current_user.role not in ('admin', 'teacher'):
+        return jsonify({'error': '权限不足'}), 403
     
     # 获取题目信息
     questions_data = json.loads(paper.questions_data) if paper.questions_data else []
@@ -403,10 +548,9 @@ def export_paper_pdf(paper_id):
                 'score': item.get('score', 10)
             })
     
-    # 生成PDF
-    include_answer = request.args.get('include_answer', 'true').lower() == 'true'
-    
     pdf_path = generate_paper_pdf(paper, questions, include_answer)
+    if not pdf_path:
+        return jsonify({'error': 'PDF生成失败，请确认已安装 xelatex'}), 500
     
     return send_file(pdf_path, as_attachment=True, download_name=f"{paper.title}.pdf")
 
@@ -498,8 +642,8 @@ def add_paper_students_batch(paper_id):
     if not class_id:
         return jsonify({'error': '班级ID不能为空'}), 400
     
-    # 获取班级学生
-    class_students = ClassStudent.query.filter_by(class_id=class_id).all()
+    # 只加入已经接受邀请的学生
+    class_students = ClassStudent.query.filter_by(class_id=class_id, status='accepted').all()
     
     added_count = 0
     for cs in class_students:
@@ -531,14 +675,7 @@ def remove_paper_student(paper_id, student_id):
     
     ps = PaperStudent.query.filter_by(paper_id=paper_id, student_id=student_id).first()
     if not ps:
-        # 自动创建考试记录
-        ps = PaperStudent(
-            paper_id=paper_id,
-            student_id=student_id,
-            status='assigned'
-        )
-        db.session.add(ps)
-        db.session.flush()  # 获取 ps.id
+        return jsonify({'error': '该学生不在考试名单中'}), 404
     
     db.session.delete(ps)
     db.session.commit()
@@ -552,84 +689,87 @@ def remove_paper_student(paper_id, student_id):
 @jwt_required()
 def submit_scores(paper_id, student_id):
     """提交学生各题得分"""
-    user_id = get_jwt_identity()
-    current_user = User.query.get(int(user_id))
+    current_user, err = require_user()
+    if err:
+        return err
     
     paper = Paper.query.get(paper_id)
     if not paper:
         return jsonify({'error': '试卷不存在'}), 404
 
-    # 只有班级教师或管理员可以登记成绩
-    if current_user.role != 'admin':
-        # 检查是否是试卷关联班级的教师
-        if paper.class_id:
-            class_info = Class.query.get(paper.class_id)
-            if not class_info or class_info.teacher_id != current_user.id:
-                return jsonify({'error': '权限不足，只有班级教师或管理员可以登记成绩'}), 403
-        else:
-            return jsonify({'error': '权限不足'}), 403
+    if not _can_score(current_user, paper, student_id):
+        return jsonify({'error': '权限不足，只有班级教师或管理员可以登记成绩'}), 403
+
+    student = db.session.get(User, student_id)
+    if not student or student.role != 'student':
+        return jsonify({'error': '学生不存在'}), 404
     
     ps = PaperStudent.query.filter_by(paper_id=paper_id, student_id=student_id).first()
     if not ps:
-        # 自动创建考试记录
         ps = PaperStudent(
             paper_id=paper_id,
             student_id=student_id,
             status='assigned'
         )
         db.session.add(ps)
-        db.session.flush()  # 获取 ps.id
+        db.session.flush()
     
-    data = request.get_json()
+    data = request.get_json() or {}
+    if data.get('absent'):
+        for existing in list(ps.scores):
+            question = Question.query.get(existing.question_id)
+            _adjust_question_stats(question, existing.score, existing.max_score, None, None, False)
+            db.session.delete(existing)
+        ps.total_score = 0
+        ps.status = 'graded'
+        db.session.commit()
+        return jsonify({'message': '已标记为未参加', 'total_score': 0})
+
     scores_data = data.get('scores', [])
+    if not isinstance(scores_data, list):
+        return jsonify({'error': '分数格式不正确'}), 400
     
     total_score = 0
     for score_item in scores_data:
         question_id = score_item.get('question_id')
-        score = score_item.get('score')
-        max_score = score_item.get('max_score')
+        try:
+            score = int(round(float(score_item.get('score'))))
+            max_score = int(round(float(score_item.get('max_score'))))
+        except (TypeError, ValueError):
+            return jsonify({'error': '分数格式不正确'}), 400
+        if max_score <= 0 or score < 0 or score > max_score:
+            return jsonify({'error': '分数超出范围'}), 400
         comment = score_item.get('comment')
         
-        # 检查是否已有记录
         existing = StudentScore.query.filter_by(
             paper_student_id=ps.id,
             question_id=question_id
         ).first()
+        question = Question.query.get(question_id)
+        if not question:
+            return jsonify({'error': f'题目 {question_id} 不存在'}), 400
         
         if existing:
+            _adjust_question_stats(question, existing.score, existing.max_score, score, max_score, False)
             existing.score = score
             existing.max_score = max_score
             existing.comment = comment
             existing.graded_by = current_user.id
         else:
-            ss = StudentScore(
+            _adjust_question_stats(question, None, None, score, max_score, True)
+            db.session.add(StudentScore(
                 paper_student_id=ps.id,
                 question_id=question_id,
                 score=score,
                 max_score=max_score,
                 comment=comment,
                 graded_by=current_user.id
-            )
-            db.session.add(ss)
+            ))
         
         total_score += score
     
-    # 更新总分
     ps.total_score = total_score
     ps.status = 'graded'
-    
-    # 更新题目统计数据（用于逻辑斯蒂拟合）
-    for score_item in scores_data:
-        question_id = score_item.get('question_id')
-        score = score_item.get('score')
-        max_score = score_item.get('max_score')
-        if max_score and max_score > 0:
-            question = Question.query.get(question_id)
-            if question:
-                question.total_attempts = (question.total_attempts or 0) + 1
-                question.total_score_rate = (question.total_score_rate or 0) + (score / max_score)
-                question.score_data_updated = True
-    
     db.session.commit()
     
     return jsonify({'message': '成绩登记成功', 'total_score': total_score})
@@ -733,8 +873,9 @@ def get_my_exams():
 @jwt_required()
 def get_my_exam_detail(publish_id):
     """学生查看考试详情（题目列表、成绩、PDF）"""
-    user_id = get_jwt_identity()
-    current_user = User.query.get(int(user_id))
+    current_user, err = require_user()
+    if err:
+        return err
 
     if current_user.role != 'student':
         return jsonify({'error': '仅限学生使用'}), 403
@@ -761,39 +902,44 @@ def get_my_exam_detail(publish_id):
         publish_id=publish_id
     ).first()
 
-    # 获取题目列表
-    questions_data = json.loads(paper.questions_data) if paper.questions_data else []
+    status = get_exam_status(publish)
+    # 进行中只给题干。考试结束且老师允许查看、并已结束登记后，才给答案。
+    show_answers = bool(exam and exam.finished_at and publish.allow_view_after_exam and status == '已结束')
+    show_questions = status == '进行中' or show_answers
+
     questions = []
-    for item in questions_data:
-        question = Question.query.get(item['question_id'])
-        if question:
-            questions.append({
+    if show_questions:
+        questions_data = json.loads(paper.questions_data) if paper.questions_data else []
+        for item in questions_data:
+            question = Question.query.get(item['question_id'])
+            if not question:
+                continue
+            payload = {
                 'question_id': question.id,
                 'question_title': question.question_title or question.title,
                 'content': question.content,
-                'answer': question.answer,
                 'content_images': question.content_images,
-                'answer_images': question.answer_images,
                 'max_score': item.get('score', 10),
                 'difficulty': question.difficulty
-            })
+            }
+            if show_answers:
+                payload['answer'] = question.answer
+                payload['answer_images'] = question.answer_images
+            questions.append(payload)
 
-    # 获取学生成绩
     student_scores = {}
+    total_got = None
     has_scores = False
+    absent = False
     if exam and exam.scores_snapshot:
         scores_list = json.loads(exam.scores_snapshot)
         for s in scores_list:
             if s['student_id'] == current_user.id:
-                student_scores = s.get('scores', {})
+                student_scores = {} if s.get('absent') else s.get('scores', {})
+                total_got = s.get('total_score')
+                absent = bool(s.get('absent'))
                 has_scores = True
                 break
-
-    # 判断是否允许查看
-    can_view = False
-    if exam and exam.finished_at:
-        if publish.allow_view_after_exam:
-            can_view = True
 
     return jsonify({
         'paper': {
@@ -806,10 +952,16 @@ def get_my_exam_detail(publish_id):
             'end_time': publish.end_time,
             'allow_view_after_exam': publish.allow_view_after_exam
         },
+        'status': status,
         'questions': questions,
         'student_scores': student_scores,
+        'total_got': total_got,
+        'absent': absent,
         'has_scores': has_scores,
-        'can_view': can_view,
+        'show_questions': show_questions,
+        'show_answers': show_answers,
+        'can_view': show_answers,
+        'can_view_pdf': show_questions,
         'scoring_finished': exam is not None
     })
 
@@ -834,6 +986,8 @@ def publish_paper(paper_id):
 
     if not class_id:
         return jsonify({'error': '请先选择考试班级'}), 400
+    if not exam_date_str or not start_time or not end_time:
+        return jsonify({'error': '请填写考试日期和起止时间'}), 400
 
     # 检查班级是否存在
     class_ = Class.query.get(class_id)
@@ -841,16 +995,14 @@ def publish_paper(paper_id):
         return jsonify({'error': '班级不存在'}), 404
 
     # 只有创建者或管理员可以发布
-    if current_user.role != 'admin' and paper.created_by != current_user.id:
+    if not current_user or (current_user.role != 'admin' and paper.created_by != current_user.id):
         return jsonify({'error': '权限不足'}), 403
 
-    # 解析考试日期
-    exam_date = None
-    if exam_date_str:
-        try:
-            exam_date = datetime.strptime(exam_date_str, '%Y-%m-%d').date()
-        except ValueError:
-            pass
+    exam_date = _parse_date(exam_date_str)
+    if not exam_date:
+        return jsonify({'error': '考试日期格式不正确'}), 400
+    if len(str(start_time)) < 4 or len(str(end_time)) < 4:
+        return jsonify({'error': '考试时间格式不正确'}), 400
 
     # 创建发布记录（每次发布创建一个独立的考试实例）
     publish = PaperPublish(
@@ -916,8 +1068,6 @@ def fit_difficulty_mapping():
     if not records:
         return jsonify({'message': '没有需要拟合的数据'}), 200
 
-    from scipy.optimize import curve_fit
-
     # 收集所有数据点 (难度系数, 得分率)
     x_data = []  # 难度系数
     y_data = []  # 得分率
@@ -930,15 +1080,7 @@ def fit_difficulty_mapping():
         return jsonify({'error': f'数据点不足，当前{len(x_data)}个，至少需要4个才能拟合'}), 400
 
     try:
-        # 逻辑斯蒂函数: y = a + (b-a)/(1+exp(-c*(x-d)))
-        # a: 高难度端得分率上限（接近1），b: 低难度端得分率下限（接近0）
-        # c: 陡峭程度，d: 拐点（中间难度）
-        p0 = [0.95, 0.05, 1.5, 2.5]
-        bounds = ([0.7, 0.0, 0.1, 0.1], [1.0, 0.3, 10, 4.9])
-
-        popt, _ = curve_fit(logistic, np.array(x_data), np.array(y_data), p0=p0, bounds=bounds, maxfev=10000)
-
-        a, b, c, d = popt
+        a, b, c, d = _fit_logistic(x_data, y_data)
 
         # 更新所有题目的拟合参数
         questions = Question.query.all()
@@ -1079,14 +1221,14 @@ def finish_scoring(paper_id):
     if not paper:
         return jsonify({'error': '试卷不存在'}), 404
 
-    data = request.get_json()
-    publish_id = data.get('publish_id')
-
-    if not publish_id:
+    data = request.get_json() or {}
+    try:
+        publish_id = int(data.get('publish_id'))
+    except (TypeError, ValueError):
         return jsonify({'error': '缺少发布记录ID'}), 400
 
     publish = PaperPublish.query.get(publish_id)
-    if not publish:
+    if not publish or publish.paper_id != paper.id:
         return jsonify({'error': '发布记录不存在'}), 404
 
     class_id = publish.class_id
@@ -1125,6 +1267,13 @@ def finish_scoring(paper_id):
         class_id=class_id, status='accepted'
     ).all()
 
+    absent_student_ids = set()
+    for raw_id in data.get('absent_student_ids') or []:
+        try:
+            absent_student_ids.add(int(raw_id))
+        except (TypeError, ValueError):
+            continue
+
     scores_snapshot = []
     for cs in class_students:
         student = User.query.get(cs.student_id)
@@ -1143,11 +1292,13 @@ def finish_scoring(paper_id):
             for ss in ps.scores:
                 scores[str(ss.question_id)] = ss.score
 
+        is_absent = student.id in absent_student_ids
         scores_snapshot.append({
             'student_id': student.id,
             'student_name': student.real_name or student.username,
-            'scores': scores,
-            'total_score': total_score
+            'scores': {} if is_absent else scores,
+            'total_score': 0 if is_absent else total_score,
+            'absent': is_absent,
         })
 
     # 创建考试快照
@@ -1169,7 +1320,6 @@ def finish_scoring(paper_id):
 
     # 保存得分记录到 ExamScoreRecord（用于逻辑斯蒂拟合）
     # 每条记录 = (题目难度系数, 学生得分率)
-    absent_student_ids = set(data.get('absent_student_ids', []) or [])
     score_records_count = 0
     for cs in class_students:
         if cs.student_id in absent_student_ids:

@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 修复并启动脚本
-cd /home/redaunt/physics
+cd "$(dirname "$0")"
 
 echo "========================================="
 echo "  物理竞赛题库系统 - 修复并启动"
@@ -33,7 +33,7 @@ echo "Python路径: $(which python3)"
 
 # 安装后端依赖
 echo "安装后端依赖..."
-venv/bin/pip install flask flask-cors flask-jwt-extended sqlalchemy werkzeug reportlab pillow python-dotenv
+venv/bin/pip install -r backend/requirements.txt
 
 # 初始化数据库
 echo "初始化数据库..."
@@ -44,7 +44,7 @@ cd ..
 # 启动后端
 echo "启动后端服务..."
 cd backend
-../venv/bin/python app/__init__.py &
+../venv/bin/python run.py &
 BACKEND_PID=$!
 cd ..
 

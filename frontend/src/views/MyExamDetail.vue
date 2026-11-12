@@ -19,8 +19,20 @@
       <span class="info-item">难度：{{ examInfo.difficulty?.toFixed(2) }}</span>
     </div>
 
+    <el-alert
+      v-if="examInfo && !showQuestions"
+      :title="hiddenMessage"
+      type="info"
+      show-icon
+      :closable="false"
+      style="margin-bottom: 16px"
+    />
+    <div v-if="hasScores && totalGot !== null" class="score-display" style="margin-bottom: 16px">
+      我的成绩：{{ totalGot }} / {{ examInfo?.total_score }}
+    </div>
+
     <!-- 题目列表 -->
-    <div v-if="questions.length > 0">
+    <div v-if="showQuestions && questions.length > 0">
       <div v-for="(q, index) in questions" :key="q.question_id" class="question-block">
         <div class="question-block-header">
           <el-tag type="primary" size="small">第{{ index + 1 }}题</el-tag>
@@ -33,7 +45,7 @@
           <span class="q-title">{{ q.question_title || '-' }}</span>
         </div>
 
-        <div class="question-split-view">
+        <div class="question-split-view" :class="{ 'single-panel': !showAnswers }">
           <!-- 左栏：题干 -->
           <div class="panel">
             <div class="panel-header">题干</div>
@@ -54,7 +66,7 @@
           </div>
 
           <!-- 右栏：答案 -->
-          <div class="panel">
+          <div class="panel" v-if="showAnswers">
             <div class="panel-header">答案</div>
             <div class="panel-body">
               <div class="latex-content" v-html="renderLatex(q.answer)"></div>
@@ -80,7 +92,7 @@
       </div>
     </div>
 
-    <el-empty v-else description="暂无题目" />
+    <el-empty v-else-if="showQuestions" description="暂无题目" />
 
     <!-- PDF 查看区域 -->
     <div v-if="canViewPdf" class="pdf-section">
@@ -99,7 +111,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import api from '../utils/api'
@@ -113,7 +125,19 @@ const examInfo = ref(null)
 const questions = ref([])
 const studentScores = ref({})
 const hasScores = ref(false)
+const totalGot = ref(null)
+const showQuestions = ref(false)
+const showAnswers = ref(false)
 const canViewPdf = ref(false)
+const examStatus = ref('')
+const hiddenMessage = computed(() => {
+  if (examInfo.value && !showQuestions.value) {
+    if (examStatus.value === '未开始') return '考试尚未开始，暂时不能查看试卷'
+    if (examInfo.value?.allow_view_after_exam) return '成绩登记结束后可以查看试卷'
+    return '考试已结束，老师未开放试卷查看'
+  }
+  return ''
+})
 const pdfUrl = ref('')
 const generatingPdf = ref(false)
 
@@ -164,8 +188,13 @@ function getAnswerImages(q) {
 async function generatePdf() {
   generatingPdf.value = true
   try {
-    const res = await api.get(`/papers/${examInfo.value.id}/export`)
-    pdfUrl.value = res.pdf_url
+    const res = await api.get(`/papers/${examInfo.value.id}/export`, {
+      params: { publish_id: route.params.publishId },
+      responseType: 'blob'
+    })
+    const blob = res instanceof Blob ? res : new Blob([res], { type: 'application/pdf' })
+    if (pdfUrl.value) URL.revokeObjectURL(pdfUrl.value)
+    pdfUrl.value = URL.createObjectURL(blob)
     ElMessage.success('PDF生成成功')
   } catch {
     ElMessage.error('PDF生成失败')
@@ -180,10 +209,14 @@ async function loadDetail() {
     const publishId = route.params.publishId
     const res = await api.get(`/papers/my-exams/${publishId}`)
     examInfo.value = res.paper
-    questions.value = res.questions
+    questions.value = res.questions || []
     studentScores.value = res.student_scores || {}
     hasScores.value = res.has_scores
-    canViewPdf.value = res.can_view
+    totalGot.value = res.total_got ?? null
+    showQuestions.value = !!res.show_questions
+    showAnswers.value = !!res.show_answers
+    examStatus.value = res.status || ''
+    canViewPdf.value = !!res.can_view_pdf
   } catch {
     ElMessage.error('加载考试详情失败')
     router.push('/my-exams')
@@ -194,6 +227,10 @@ async function loadDetail() {
 
 onMounted(() => {
   loadDetail()
+})
+
+onBeforeUnmount(() => {
+  if (pdfUrl.value) URL.revokeObjectURL(pdfUrl.value)
 })
 </script>
 
@@ -255,6 +292,15 @@ onMounted(() => {
   display: flex;
   gap: 0;
   min-height: 200px;
+}
+
+.question-split-view.single-panel .panel {
+  flex: 1 1 100%;
+  width: 100%;
+}
+
+.question-split-view.single-panel .panel:first-child {
+  border-right: none;
 }
 
 .panel {

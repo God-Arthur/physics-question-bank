@@ -1,8 +1,10 @@
 import json
+from datetime import datetime, timedelta
 from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from app.utils.database import db
-from app.models import Class, ClassStudent, User, ClassExam, PaperPublish, Paper, Question, PaperStudent
+from app.utils.authz import require_user
+from app.models import Class, ClassStudent, User, ClassExam, PaperPublish, Paper, Question, PaperStudent, ExamScoreRecord, now_bjt
 
 classes_bp = Blueprint('classes', __name__)
 
@@ -11,8 +13,9 @@ classes_bp = Blueprint('classes', __name__)
 @jwt_required()
 def get_classes():
     """获取班级列表"""
-    user_id = get_jwt_identity()
-    user = User.query.get(int(user_id))
+    user, err = require_user()
+    if err:
+        return err
     
     if user.role == 'teacher':
         # 教师可以看所有班级
@@ -54,16 +57,19 @@ def get_classes():
 @jwt_required()
 def get_class(class_id):
     """获取班级详情"""
-    user_id = get_jwt_identity()
-    user = User.query.get(int(user_id))
+    user, err = require_user()
+    if err:
+        return err
     
     class_ = Class.query.get(class_id)
     if not class_:
         return jsonify({'error': '班级不存在'}), 404
     
-    # 检查权限 - 所有教师都可以查看任何班级
+    # 学生只能查看已经加入的班级，待确认和已拒绝的邀请不能看名单
     if user.role == 'student':
-        membership = ClassStudent.query.filter_by(class_id=class_id, student_id=user.id).first()
+        membership = ClassStudent.query.filter_by(
+            class_id=class_id, student_id=user.id, status='accepted'
+        ).first()
         if not membership:
             return jsonify({'error': '权限不足'}), 403
     
@@ -98,13 +104,14 @@ def get_class(class_id):
 @jwt_required()
 def create_class():
     """创建班级（仅教师）"""
-    user_id = get_jwt_identity()
-    user = User.query.get(int(user_id))
+    user, err = require_user()
+    if err:
+        return err
     
     if user.role not in ['admin', 'teacher']:
         return jsonify({'error': '权限不足'}), 403
     
-    data = request.get_json()
+    data = request.get_json() or {}
     if not data or not data.get('name'):
         return jsonify({'error': '班级名称不能为空'}), 400
     
@@ -128,8 +135,9 @@ def create_class():
 @jwt_required()
 def update_class(class_id):
     """更新班级信息"""
-    user_id = get_jwt_identity()
-    user = User.query.get(int(user_id))
+    user, err = require_user()
+    if err:
+        return err
     
     class_ = Class.query.get(class_id)
     if not class_:
@@ -139,7 +147,7 @@ def update_class(class_id):
     if user.role != 'admin' and class_.teacher_id != user.id:
         return jsonify({'error': '权限不足'}), 403
     
-    data = request.get_json()
+    data = request.get_json() or {}
     
     if data.get('name'):
         # 检查同一教师是否已有同名班级（排除当前班级）
@@ -161,8 +169,9 @@ def update_class(class_id):
 @jwt_required()
 def delete_class(class_id):
     """删除班级"""
-    user_id = get_jwt_identity()
-    user = User.query.get(int(user_id))
+    user, err = require_user()
+    if err:
+        return err
     
     class_ = Class.query.get(class_id)
     if not class_:
@@ -171,6 +180,13 @@ def delete_class(class_id):
     # 只有创建者或管理员可以删除
     if user.role != 'admin' and class_.teacher_id != user.id:
         return jsonify({'error': '权限不足'}), 403
+
+    publish_ids = [row.id for row in PaperPublish.query.filter_by(class_id=class_id).all()]
+    if publish_ids:
+        ExamScoreRecord.query.filter(ExamScoreRecord.publish_id.in_(publish_ids)).delete(synchronize_session=False)
+    ClassExam.query.filter_by(class_id=class_id).delete(synchronize_session=False)
+    PaperPublish.query.filter_by(class_id=class_id).delete(synchronize_session=False)
+    Paper.query.filter_by(class_id=class_id).update({Paper.class_id: None}, synchronize_session=False)
     
     db.session.delete(class_)
     db.session.commit()
@@ -319,7 +335,7 @@ def accept_invitation(invitation_id):
         return jsonify({'error': '权限不足'}), 403
     
     invitation = ClassStudent.query.get(invitation_id)
-    if not invitation or invitation.student_id != user.id:
+    if not invitation or invitation.student_id != user.id or invitation.status != 'pending':
         return jsonify({'error': '邀请不存在'}), 404
     
     invitation.status = 'accepted'
@@ -339,7 +355,7 @@ def reject_invitation(invitation_id):
         return jsonify({'error': '权限不足'}), 403
     
     invitation = ClassStudent.query.get(invitation_id)
-    if not invitation or invitation.student_id != user.id:
+    if not invitation or invitation.student_id != user.id or invitation.status != 'pending':
         return jsonify({'error': '邀请不存在'}), 404
     
     invitation.status = 'rejected'
@@ -475,27 +491,32 @@ def get_class_exams(class_id):
 
 
 def get_exam_status(publish):
-    """根据考试日期和时间判断考试状态（从PaperPublish读取）"""
-    if not publish.exam_date or not publish.end_time:
+    """按北京时间判断考试状态。容器时区通常是 UTC，不能用 datetime.now()。"""
+    if not publish or not publish.exam_date or not publish.end_time:
         return '未开始'
 
-    from datetime import datetime
-    now = datetime.now()
-    exam_start = datetime.strptime(f"{publish.exam_date.isoformat()} {publish.start_time or '00:00'}", '%Y-%m-%d %H:%M')
+    now = now_bjt().replace(tzinfo=None)
+    try:
+        exam_start = datetime.strptime(
+            f"{publish.exam_date.isoformat()} {publish.start_time or '00:00'}",
+            '%Y-%m-%d %H:%M'
+        )
+        exam_end = datetime.strptime(
+            f"{publish.exam_date.isoformat()} {publish.end_time}",
+            '%Y-%m-%d %H:%M'
+        )
+    except ValueError:
+        return '未开始'
 
-    # 判断结束时间是否跨天（结束时间早于开始时间）
-    exam_end = datetime.strptime(f"{publish.exam_date.isoformat()} {publish.end_time}", '%Y-%m-%d %H:%M')
+    # 结束时间早于开始时间时视为跨天
     if publish.start_time and publish.end_time and publish.end_time < publish.start_time:
-        # 跨天，结束日期加1天
-        from datetime import timedelta
         exam_end += timedelta(days=1)
 
     if now < exam_start:
         return '未开始'
-    elif now > exam_end:
+    if now > exam_end:
         return '已结束'
-    else:
-        return '进行中'
+    return '进行中'
 
 @classes_bp.route('/<int:class_id>/exams/<int:publish_id>/scores', methods=['GET'])
 @jwt_required()
