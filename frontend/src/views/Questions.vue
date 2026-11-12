@@ -90,8 +90,8 @@
             </el-form-item>
             
             <!-- 原创题显示作者筛选 -->
-            <el-form-item v-if="filters.source_type === 'original'" class="inline-item" style="margin-left: 16px">
-              <el-input v-model="filters.author" placeholder="请输入作者" clearable style="width: 140px" />
+            <el-form-item v-if="filters.source_type !== 'mock'" class="inline-item" style="margin-left: 16px">
+              <el-input v-model="filters.author" placeholder="作者" clearable style="width: 140px" />
             </el-form-item>
           </div>
         </div>
@@ -599,139 +599,50 @@ async function loadQuestions() {
     const params = {
       page: pagination.page,
       per_page: pagination.perPage,
+      match_scope: filters.matchScope.join(','),
       ...filters
     }
-    // 移除空值和 matchScope（后端不需要）
+    // matchScope 用逗号拼进 match_scope，数组本身不传
     Object.keys(params).forEach(key => {
       if (params[key] === '' || params[key] === null || key === 'matchScope') {
         delete params[key]
       }
     })
 
-    const res = await api.get('/questions', { params })
-    let resultGroups = res.groups || []
-
-    // 根据匹配范围过滤
-    const matchPaper = filters.matchScope.includes('paper')
-    const matchQuestion = filters.matchScope.includes('question')
-    const expandedIndices = []
-    matchedQuestionIds.value = new Set() // 重置匹配的题目ID
-
-    // 如果两个都不选，返回空结果
-    if (!matchPaper && !matchQuestion) {
+    if (!filters.matchScope.includes('paper') && !filters.matchScope.includes('question')) {
       groups.value = []
       expandedPapers.value = []
+      matchedQuestionIds.value = new Set()
       pagination.total = 0
       loading.value = false
       return
     }
 
+    const res = await api.get('/questions', { params })
+    const resultGroups = res.groups || []
+
+    const matchQuestion = filters.matchScope.includes('question')
+    const expandedIndices = []
+    matchedQuestionIds.value = new Set()
     const keyword = filters.keyword?.toLowerCase() || ''
-
-    // 试卷属性匹配函数（用于匹配试卷的整体属性）
-    const paperAttrMatch = (group) => {
-      // 题型：检查试卷中是否有题目符合该题型
-      if (filters.question_type) {
-        const hasMatch = group.questions.some(q => q.question_type === filters.question_type)
-        if (!hasMatch) return false
-      }
-      // 难度：检查试卷的加权平均难度是否在范围内
-      if (filters.difficultyMin !== null || filters.difficultyMax !== null) {
-        const avgDifficulty = group.difficulty || 0
-        if (filters.difficultyMin !== null && avgDifficulty < filters.difficultyMin) return false
-        if (filters.difficultyMax !== null && avgDifficulty > filters.difficultyMax) return false
-      }
-      // 年份：检查试卷中是否有题目符合该年份
-      if (filters.year) {
-        const hasMatch = group.questions.some(q => q.year === filters.year)
-        if (!hasMatch) return false
-      }
-      // 来源：检查试卷中是否有题目符合该来源
-      if (filters.source_type) {
-        const hasMatch = group.questions.some(q => q.source_type === filters.source_type)
-        if (!hasMatch) return false
-      }
-      // 机构：检查试卷中是否有题目符合该机构
-      if (filters.source_institute) {
-        const hasMatch = group.questions.some(q => q.source_institute === filters.source_institute)
-        if (!hasMatch) return false
-      }
-      // 作者：检查试卷中是否有题目符合该作者
-      if (filters.author) {
-        const hasMatch = group.questions.some(q => q.author === filters.author)
-        if (!hasMatch) return false
-      }
-      return true
-    }
-
-    // 题目属性匹配函数
-    const questionAttrMatch = (q) => {
-      if (filters.question_type && q.question_type !== filters.question_type) return false
-      if (filters.difficultyMin !== null && (q.difficulty || 0) < filters.difficultyMin) return false
-      if (filters.difficultyMax !== null && (q.difficulty || 0) > filters.difficultyMax) return false
-      if (filters.year && q.year !== filters.year) return false
-      if (filters.source_type && q.source_type !== filters.source_type) return false
-      if (filters.source_institute && q.source_institute !== filters.source_institute) return false
-      if (filters.author && q.author !== filters.author) return false
-      return true
-    }
-
-    // 题目关键词匹配函数
-    const questionKeywordMatch = (q) => {
-      if (!keyword) return true
-      return (q.question_title && q.question_title.toLowerCase().includes(keyword)) ||
-             (q.content && q.content.toLowerCase().includes(keyword)) ||
-             (q.answer && q.answer.toLowerCase().includes(keyword))
-    }
-
-    // 处理匹配逻辑
-    if (matchPaper && !matchQuestion) {
-      // 只匹配试卷：关键词匹配试卷标题，其他条件匹配试卷属性
-      resultGroups = resultGroups.filter((group, index) => {
-        const paperTitleMatch = !keyword || group.paper_name.toLowerCase().includes(keyword)
-        const attrMatch = paperAttrMatch(group)
-        return paperTitleMatch && attrMatch
-      })
-    } else if (!matchPaper && matchQuestion) {
-      // 只匹配题目：关键词匹配题目信息，其他条件匹配题目属性
-      resultGroups = resultGroups.filter((group, index) => {
-        const matchedQuestions = group.questions.filter(q => {
-          return questionKeywordMatch(q) && questionAttrMatch(q)
-        })
-        if (matchedQuestions.length > 0) {
-          expandedIndices.push(index)
-          // 记录匹配的题目ID
-          matchedQuestions.forEach(q => matchedQuestionIds.value.add(q.id))
-          return true
+    if (matchQuestion && keyword) {
+      resultGroups.forEach((group, index) => {
+        let hit = false
+        for (const question of group.questions || []) {
+          const matched = (question.question_title && question.question_title.toLowerCase().includes(keyword)) ||
+            (question.content && question.content.toLowerCase().includes(keyword)) ||
+            (question.answer && question.answer.toLowerCase().includes(keyword))
+          if (matched) {
+            matchedQuestionIds.value.add(question.id)
+            hit = true
+          }
         }
-        return false
-      })
-    } else if (matchPaper && matchQuestion) {
-      // 两个都匹配：试卷可以通过任一方式匹配，匹配题目的试卷要展开
-      resultGroups = resultGroups.filter((group, index) => {
-        // 试卷匹配方式
-        const paperTitleMatch = !keyword || group.paper_name.toLowerCase().includes(keyword)
-        const paperAttr = paperAttrMatch(group)
-        const paperWay = paperTitleMatch && paperAttr
-
-        // 题目匹配方式
-        const matchedQuestions = group.questions.filter(q => {
-          return questionKeywordMatch(q) && questionAttrMatch(q)
-        })
-        const questionWay = matchedQuestions.length > 0
-
-        if (questionWay) {
-          expandedIndices.push(index)
-          matchedQuestions.forEach(q => matchedQuestionIds.value.add(q.id))
-        }
-
-        return paperWay || questionWay
+        if (hit) expandedIndices.push(index)
       })
     }
 
     groups.value = resultGroups
-    // 如果开启了匹配题目，自动展开包含匹配题目的试卷
-    expandedPapers.value = matchQuestion && (keyword || filters.question_type || filters.difficultyMin !== null || filters.difficultyMax !== null || filters.year || filters.source_type || filters.source_institute || filters.author) ? expandedIndices : []
+    expandedPapers.value = expandedIndices
     pagination.total = res.total
   } catch (error) {
     // 错误已处理
@@ -988,8 +899,7 @@ function viewQuestion(question) {
 
 // 试卷操作
 function viewPaper(paper) {
-  // 跳转到试卷详情页
-  router.push(`/papers/${paper.paper_uuid}`)
+  router.push(`/questions/${paper.paper_uuid}`)
 }
 
 function editPaper(group) {
@@ -1125,7 +1035,7 @@ async function fitDifficultyMapping() {
       need_fit: false,
       last_fitted_at: new Date().toISOString()
     }
-    ElMessage.success(`拟合完成，共处理 ${res.fitted_count} 道题目`)
+    ElMessage.success(`拟合完成，共处理 ${res.data_points ?? 0} 个得分记录`)
   } catch (error) {
     if (error.response?.data?.error) {
       ElMessage.error(error.response.data.error)

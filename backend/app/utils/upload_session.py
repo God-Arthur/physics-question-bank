@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import shutil
 import threading
 import time
@@ -7,6 +8,12 @@ import uuid
 import ast
 from datetime import datetime
 from typing import Dict, Iterable, Optional, Tuple
+
+_SESSION_ID_RE = re.compile(r'^[0-9a-fA-F-]{16,64}$')
+
+
+def is_safe_session_id(session_id: str) -> bool:
+    return isinstance(session_id, str) and _SESSION_ID_RE.fullmatch(session_id) is not None
 
 
 def _static_dir(app) -> str:
@@ -37,7 +44,10 @@ def get_session_root_dir(app) -> str:
 
 
 def get_session_dir(app, session_id: str) -> str:
-    return os.path.join(get_session_root_dir(app), session_id)
+    root = get_session_root_dir(app)
+    if not is_safe_session_id(session_id):
+        return os.path.join(root, '.invalid-session')
+    return os.path.join(root, session_id)
 
 
 def _meta_path(session_dir: str) -> str:
@@ -122,6 +132,8 @@ def persist_images_from_session(
 
     mapping: Dict[str, str] = {}
     for old_name in set([f for f in filenames if f]):
+        if not isinstance(old_name, str) or '/' in old_name or '\\' in old_name or old_name in ('.', '..'):
+            continue
         src = session_file_path(app, session_id, old_name)
         if not os.path.exists(src):
             continue

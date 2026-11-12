@@ -5,6 +5,7 @@ import re
 import shutil
 import platform
 import ast
+import json
 import logging
 
 
@@ -48,58 +49,104 @@ else:
     logger.warning("未找到 xelatex，PDF 生成将不可用")
 
 def escape_latex(text):
-    """转义 LaTeX 特殊字符（保留公式）"""
+    """转义 LaTeX 特殊字符，并保留 $...$ / $$...$$ 公式。"""
     if not text:
         return ''
 
-    # 先处理 LaTeX 公式，保存到列表（必须在去除 HTML 标签之前！）
-    # 否则公式中的 < > 会被当作 HTML 标签删除，如 0<x<b 中的 <x<b>
     formulas = []
+
     def save_formula(match):
         formulas.append(match.group(0))
-        return f"__FORMULA_PLACEHOLDER_{len(formulas)-1}__"
+        return f"\u0000FORMULA{len(formulas) - 1}\u0000"
 
-    text = re.sub(r'\$\$[^$]+\$\$', save_formula, text, flags=re.DOTALL)
-    text = re.sub(r'\$[^$]+\$', save_formula, text)
-
-    # 去除 HTML 标签（公式已被替换为占位符，不会被误删）
+    # 公式里的 < > 不能先被当成 HTML 标签删掉
+    text = re.sub(r'\$\$[\s\S]+?\$\$', save_formula, text)
+    text = re.sub(r'\$[^$\n]+?\$', save_formula, text)
     text = re.sub(r'<[^>]+>', '', text)
 
-    # 转义特殊字符（不在公式占位符中的）
-    # 先分割，处理后再合并
-    parts = re.split(r'(__FORMULA_PLACEHOLDER_\d+__)', text)
+    parts = re.split(r'(\u0000FORMULA\d+\u0000)', text)
     escaped_parts = []
+    replacements = (
+        ('\\', '\u0000BS\u0000'),
+        ('&', r'\&'),
+        ('%', r'\%'),
+        ('#', r'\#'),
+        ('_', r'\_'),
+        ('{', r'\{'),
+        ('}', r'\}'),
+        ('~', r'\textasciitilde{}'),
+        ('^', r'\textasciicircum{}'),
+        ('<', r'\textless{}'),
+        ('>', r'\textgreater{}'),
+    )
     for part in parts:
-        if part.startswith('__FORMULA_PLACEHOLDER_'):
+        if part.startswith('\u0000FORMULA'):
             escaped_parts.append(part)
-        else:
-            # 转义特殊字符
-            replacements = {
-                '\\': r'\textbackslash{}',
-                '&': r'\&',
-                '%': r'\%',
-                '#': r'\#',
-                '_': r'\_',
-                '{': r'\{',
-                '}': r'\}',
-                '~': r'\textasciitilde{}',
-                '^': r'\textasciicircum{}',
-                '<': r'\textless{}',
-                '>': r'\textgreater{}',
-            }
-            for char, escaped in replacements.items():
-                part = part.replace(char, escaped)
-            escaped_parts.append(part)
+            continue
+        for char, escaped in replacements:
+            part = part.replace(char, escaped)
+        part = part.replace('\u0000BS\u0000', r'\textbackslash{}')
+        escaped_parts.append(part)
 
     text = ''.join(escaped_parts)
-
-    # 恢复公式
-    for i, formula in enumerate(formulas):
-        text = text.replace(f"__FORMULA_PLACEHOLDER_{i}__", formula)
-
+    for index, formula in enumerate(formulas):
+        text = text.replace(f"\u0000FORMULA{index}\u0000", formula)
     return text
 
-def generate_latex_template(title, time_info, questions):
+
+def _static_image_path(img_path):
+    """只允许读取 static 目录内的题目图片。"""
+    if not img_path or not isinstance(img_path, str):
+        return None
+    normalized = img_path.replace('\\', '/')
+    if normalized.startswith('/') or '..' in normalized.split('/'):
+        return None
+    backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    static_dir = os.path.realpath(os.path.join(backend_dir, 'static'))
+    for relative in (
+        os.path.join('question_images', img_path),
+        os.path.join('uploads', img_path),
+    ):
+        full_path = os.path.realpath(os.path.join(static_dir, relative))
+        if full_path.startswith(static_dir + os.sep) and os.path.isfile(full_path):
+            return full_path
+    return None
+
+
+def _iter_images(raw_images):
+    if not raw_images:
+        return []
+    images = raw_images
+    if isinstance(raw_images, str):
+        try:
+            images = json.loads(raw_images)
+        except (TypeError, ValueError):
+            try:
+                images = ast.literal_eval(raw_images)
+            except (ValueError, SyntaxError):
+                return []
+    return images if isinstance(images, list) else []
+
+
+def _append_images(lines, raw_images):
+    size_map = {'large': '0.9', 'medium': '0.45', 'small': '0.3'}
+    for img_item in _iter_images(raw_images):
+        if isinstance(img_item, dict):
+            img_path = img_item.get('filename', '')
+            size_tag = img_item.get('size', 'medium')
+        else:
+            img_path = img_item
+            size_tag = 'medium'
+        full_path = _static_image_path(img_path)
+        if not full_path:
+            continue
+        img_width = size_map.get(size_tag, '0.45')
+        lines.append(r'\begin{center}')
+        lines.append(r'\includegraphics[width=' + img_width + r'\textwidth]{' + full_path + '}')
+        lines.append(r'\end{center}')
+        lines.append('')
+
+def generate_latex_template(title, time_info, questions, include_answer=False):
     """生成 LaTeX 模板（简化版，确保兼容性）
 
     格式：
@@ -144,13 +191,13 @@ def generate_latex_template(title, time_info, questions):
 
     # 标题：宋体四号加粗
     lines.append(r'\begin{center}')
-    lines.append(r'\zihao{4}\textbf{' + title + r'}')
+    lines.append(r'\zihao{4}\textbf{' + escape_latex(title or '') + r'}')
     lines.append(r'\end{center}')
     lines.append('')
 
     # 时间：宋体10pt
     lines.append(r'\begin{center}')
-    lines.append(r'\fontsize{10pt}{14pt}\selectfont ' + time_info + r'')
+    lines.append(r'\fontsize{10pt}{14pt}\selectfont ' + escape_latex(time_info or ''))
     lines.append(r'\end{center}')
     lines.append('')
 
@@ -204,44 +251,13 @@ def generate_latex_template(title, time_info, questions):
         lines.append(r'\fontsize{10pt}{14pt}\selectfont')
         lines.append(escape_latex(content))
         lines.append('')
-
-        # 如果有图片
-        if question.content_images:
-            try:
-                images = ast.literal_eval(question.content_images) if isinstance(question.content_images, str) else question.content_images
-                for img_item in images:
-                    # 支持两种格式：纯字符串文件名 或 {filename, size} 对象
-                    if isinstance(img_item, dict):
-                        img_path = img_item.get('filename', '')
-                        size_tag = img_item.get('size', 'medium')
-                    else:
-                        img_path = img_item
-                        size_tag = 'medium'
-
-                    # 大小映射：大=90%, 中=45%, 小=30%
-                    size_map = {
-                        'large': '0.9',
-                        'medium': '0.45',
-                        'small': '0.3'
-                    }
-                    img_width = size_map.get(size_tag, '0.45')
-
-                    # 使用绝对路径，避免 .. 导致的问题
-                    backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-                    static_dir = os.path.join(backend_dir, 'static')
-                    candidates = [
-                        os.path.normpath(os.path.join(static_dir, 'question_images', img_path)),
-                        os.path.normpath(os.path.join(static_dir, 'uploads', img_path)),  # 兼容旧数据
-                    ]
-                    for full_path in candidates:
-                        if os.path.exists(full_path):
-                            lines.append(r'\begin{center}')
-                            lines.append(r'\includegraphics[width=' + img_width + r'\textwidth]{' + full_path + '}')
-                            lines.append(r'\end{center}')
-                            lines.append('')
-                            break
-            except:
-                pass
+        _append_images(lines, question.content_images)
+        if include_answer:
+            lines.append(r'\noindent\textbf{参考答案}')
+            lines.append('')
+            lines.append(escape_latex(question.answer or ''))
+            lines.append('')
+            _append_images(lines, question.answer_images)
 
     lines.append(r'\label{lastpage}')
     lines.append(r'\end{document}')
@@ -287,7 +303,7 @@ def generate_answer_latex_template(title, time_info, questions):
 
     # 标题：宋体四号加粗
     lines.append(r'\begin{center}')
-    lines.append(r'\zihao{4}\textbf{' + title + r'}')
+    lines.append(r'\zihao{4}\textbf{' + escape_latex(title or '') + r'}')
     lines.append(r'\end{center}')
     lines.append('')
 
@@ -329,34 +345,7 @@ def generate_answer_latex_template(title, time_info, questions):
             lines.append(escape_latex(answer))
             lines.append('')
 
-        # 如果有答案图片
-        if question.answer_images:
-            try:
-                images = ast.literal_eval(question.answer_images) if isinstance(question.answer_images, str) else question.answer_images
-                for img_item in images:
-                    if isinstance(img_item, dict):
-                        img_path = img_item.get('filename', '')
-                        size_tag = img_item.get('size', 'medium')
-                    else:
-                        img_path = img_item
-                        size_tag = 'medium'
-                    size_map = {'large': '0.9', 'medium': '0.45', 'small': '0.3'}
-                    img_width = size_map.get(size_tag, '0.45')
-                    backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-                    static_dir = os.path.join(backend_dir, 'static')
-                    candidates = [
-                        os.path.normpath(os.path.join(static_dir, 'question_images', img_path)),
-                        os.path.normpath(os.path.join(static_dir, 'uploads', img_path)),  # 兼容旧数据
-                    ]
-                    for full_path in candidates:
-                        if os.path.exists(full_path):
-                            lines.append(r'\begin{center}')
-                            lines.append(r'\includegraphics[width=' + img_width + r'\textwidth]{' + full_path + '}')
-                            lines.append(r'\end{center}')
-                            lines.append('')
-                            break
-            except:
-                pass
+        _append_images(lines, question.answer_images)
 
     lines.append(r'\label{lastpage}')
     lines.append(r'\end{document}')
@@ -588,7 +577,7 @@ def generate_paper_pdf(paper, questions, include_answer=True):
 
     pdf_path = os.path.join(output_dir, f'paper_{paper.id}.pdf')
 
-    latex_content = generate_latex_template(title, time_info, questions)
+    latex_content = generate_latex_template(title, time_info, questions, include_answer=include_answer)
 
     if compile_latex_to_pdf(latex_content, pdf_path):
         return pdf_path

@@ -4,7 +4,7 @@ import { cleanupUploadSessionNoAuth, cleanupPdfSessionNoAuth } from './uploadSes
 
 const api = axios.create({
   baseURL: '/api',
-  timeout: 30000
+  timeout: 120000
 })
 
 const isDev = import.meta.env.DEV
@@ -32,13 +32,18 @@ api.interceptors.response.use(
     return response.data
   },
   error => {
+    const requestUrl = error.config?.url || ''
+    const isLoginRequest = requestUrl.includes('/auth/login')
     const message = error.response?.data?.error || '请求失败'
     if (isDev) {
       console.error('请求错误:', error.response?.status, message)
     }
-    ElMessage.error(message)
+    // 登录失败的 401 是密码错误，不是登录过期，不能清掉 token 再跳回登录页
+    if (!isLoginRequest) {
+      ElMessage.error(message)
+    }
 
-    if (error.response?.status === 401) {
+    if (error.response?.status === 401 && !isLoginRequest) {
       if (isDev) {
         console.error('401 未授权，清除 token 并跳转登录')
       }

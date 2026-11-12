@@ -6,8 +6,10 @@ import json
 import time
 import uuid
 import ast
+from datetime import datetime
 from app.utils.database import db
-from app.models import Question, User
+from app.utils.authz import require_roles
+from app.models import Question, User, StudentScore, ExamScoreRecord, Paper
 from app.utils.upload_session import (
     cleanup_expired_upload_sessions,
     cleanup_upload_session,
@@ -32,6 +34,31 @@ def allowed_file(filename):
 
 def is_pdf_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() == 'pdf'
+
+
+def _paper_name(question):
+    return question.title or question.question_title or '未命名题目'
+
+
+def _staff_user():
+    user, err = require_roles('admin', 'teacher')
+    return user, err
+
+
+def _detach_question(question):
+    """题目被成绩引用时，先删掉引用再删题目，避免外键报错。"""
+    StudentScore.query.filter_by(question_id=question.id).delete(synchronize_session=False)
+    ExamScoreRecord.query.filter_by(question_id=question.id).delete(synchronize_session=False)
+    needle = str(question.id)
+    for paper in Paper.query.filter(Paper.questions_data.contains(needle)).all():
+        try:
+            items = json.loads(paper.questions_data or '[]')
+        except (TypeError, ValueError):
+            continue
+        kept = [item for item in items if item.get('question_id') != question.id]
+        if len(kept) != len(items):
+            paper.questions_data = json.dumps(kept)
+            paper.total_score = sum(int(item.get('score') or 0) for item in kept)
 
 
 @questions_bp.route('/upload-session', methods=['POST'])
@@ -90,165 +117,153 @@ def get_tmp_image(session_id, filename):
 @questions_bp.route('', methods=['GET'])
 @jwt_required()
 def get_questions():
-    """获取题目列表（按试卷分组）"""
-    page = request.args.get('page', 1, type=int)
-    per_page = request.args.get('per_page', 20, type=int)
-    
-    # 筛选条件
-    question_type = request.args.get('question_type')
+    """按试卷分组返回题目。分页单位是试卷，而不是题目。"""
+    user, err = _staff_user()
+    if err:
+        return err
+
+    page = max(request.args.get('page', 1, type=int) or 1, 1)
+    per_page = request.args.get('per_page', 20, type=int) or 20
+    per_page = min(max(per_page, 1), 500)
+
+    question_type = request.args.get('question_type') or None
     difficulty_min = request.args.get('difficultyMin', type=float)
     difficulty_max = request.args.get('difficultyMax', type=float)
-    source_type = request.args.get('source_type')
-    source_institute = request.args.get('source_institute')
+    source_type = request.args.get('source_type') or None
+    source_institute = request.args.get('source_institute') or None
     year = request.args.get('year', type=int)
-    keyword = request.args.get('keyword')
-    
-    # 如果有关键词搜索，先找到匹配的试卷标题
-    matched_paper_titles = set()
-    if keyword:
-        # 查找题目内容匹配关键词的题目，获取其试卷标题
-        matched_questions = Question.query.filter(
-            db.or_(
-                Question.content.contains(keyword),
-                Question.question_title.contains(keyword)
-            )
-        ).all()
-        for q in matched_questions:
-            paper_name = q.title or q.question_title or '未命名题目'
-            matched_paper_titles.add(paper_name)
-    
-    query = Question.query
-    
-    if question_type:
-        query = query.filter(Question.question_type == question_type)
-    if difficulty_min is not None:
-        query = query.filter(Question.difficulty >= difficulty_min)
-    if difficulty_max is not None:
-        query = query.filter(Question.difficulty <= difficulty_max)
-    if source_type:
-        query = query.filter(Question.source_type == source_type)
-    if source_institute:
-        query = query.filter(Question.source_institute == source_institute)
-    if year:
-        query = query.filter(Question.year == year)
-    
-    # 关键词搜索：匹配试卷标题或题目内容
-    if keyword:
-        query = query.filter(
-            db.or_(
-                Question.title.contains(keyword),
-                Question.content.contains(keyword),
-                Question.question_title.contains(keyword)
-            )
-        )
-    
-    pagination = query.order_by(Question.created_at.desc()).paginate(
-        page=page, per_page=per_page, error_out=False
-    )
-    
-    # 收集所有需要返回的试卷标题
-    paper_titles_to_include = set()
-    for q in pagination.items:
-        paper_name = q.title or q.question_title or '未命名题目'
-        paper_titles_to_include.add(paper_name)
-    
-    # 如果有关键词搜索且匹配到题目内容，需要获取这些试卷的所有题目
-    all_questions_for_papers = []
-    if keyword and matched_paper_titles:
-        # 获取匹配试卷的所有题目
-        all_questions_for_papers = Question.query.filter(
-            db.or_(
-                Question.title.in_(matched_paper_titles),
-                db.and_(Question.title.is_(None), Question.question_title.in_(matched_paper_titles))
-            )
-        ).all()
-    
-    # 合并题目：当前页的题目 + 匹配试卷的所有题目（去重）
-    all_questions = list(pagination.items)
-    existing_ids = {q.id for q in all_questions}
+    keyword = (request.args.get('keyword') or '').strip()
+    author = (request.args.get('author') or '').strip()
+    paper_uuid = (request.args.get('paper_uuid') or '').strip()
+    scopes = {part.strip() for part in (request.args.get('match_scope') or 'paper,question').split(',') if part.strip()}
+    match_paper = 'paper' in scopes
+    match_question = 'question' in scopes
 
-    # 分组展示时，分页命中的“试卷”必须补齐同一试卷下的全部题目。
-    # 否则题库列表中的试卷难度只按当前页部分题目计算，
-    # 会和试卷详情页按整套试卷计算出的难度不一致。
-    original_paper_names = set()
-    for q in pagination.items:
-        paper_name = q.title or q.question_title or '未命名题目'
-        original_paper_names.add(paper_name)
+    questions = Question.query.order_by(Question.id.asc()).all()
+    grouped = {}
+    for question in questions:
+        grouped.setdefault(_paper_name(question), []).append(question)
 
-    paper_questions = []
-    if original_paper_names:
-        paper_questions = Question.query.filter(
-            db.or_(
-                Question.title.in_(original_paper_names),
-                db.and_(Question.title.is_(None), Question.question_title.in_(original_paper_names))
-            )
-        ).order_by(Question.id.asc()).all()
+    def question_attr(question):
+        if question_type and question.question_type != question_type:
+            return False
+        if difficulty_min is not None and (question.difficulty or 0) < difficulty_min:
+            return False
+        if difficulty_max is not None and (question.difficulty or 0) > difficulty_max:
+            return False
+        if year and question.year != year:
+            return False
+        if source_type and question.source_type != source_type:
+            return False
+        if source_institute and question.source_institute != source_institute:
+            return False
+        if author and (question.author or '') != author:
+            return False
+        return True
 
-    for q in paper_questions:
-        if q.id not in existing_ids:
-            all_questions.append(q)
-            existing_ids.add(q.id)
+    def question_keyword(question):
+        if not keyword:
+            return True
+        haystack = ' '.join(filter(None, [question.question_title, question.content, question.answer])).lower()
+        return keyword.lower() in haystack
 
-    for q in all_questions_for_papers:
-        if q.id not in existing_ids:
-            all_questions.append(q)
-            existing_ids.add(q.id)
-    
-    # 按 title（试卷标题）分组，无 title 的用题目标题作为试卷名
-    groups = {}
-    for q in all_questions:
-        paper_name = q.title or q.question_title or '未命名题目'
-        if paper_name not in groups:
-            groups[paper_name] = {
-                'paper_uuid': f"P{q.id}",  # 用第一个题目ID作为唯一识别码
-                'paper_name': paper_name,
-                'questions': [],
-                'total_score': 0,
-                'weighted_difficulty': 0
-            }
-        
-        # 分配题号
-        question_data = q.to_dict()
-        question_data['question_number'] = len(groups[paper_name]['questions']) + 1
-        
-        # 累计难度计算
-        score = q.default_score or 40
-        difficulty = q.difficulty or 0
-        groups[paper_name]['total_score'] += score
-        groups[paper_name]['weighted_difficulty'] += score * difficulty
-        groups[paper_name]['questions'].append(question_data)
-    
-    # 只保留原始分页中的试卷（避免添加太多额外试卷）
-    # original_paper_names 已在补齐同试卷题目时计算
-    
-    # 计算每个试卷的难度系数，分配序号ID
+    def paper_difficulty(items):
+        total_score = 0
+        weighted = 0
+        for question in items:
+            score = question.default_score or 40
+            total_score += score
+            weighted += score * (question.difficulty or 0)
+        if total_score <= 0:
+            return 0
+        return round(weighted / total_score, 2)
+
+    def paper_attr(items, difficulty):
+        if question_type and not any(question.question_type == question_type for question in items):
+            return False
+        if difficulty_min is not None and difficulty < difficulty_min:
+            return False
+        if difficulty_max is not None and difficulty > difficulty_max:
+            return False
+        if year and not any(question.year == year for question in items):
+            return False
+        if source_type and not any(question.source_type == source_type for question in items):
+            return False
+        if source_institute and not any(question.source_institute == source_institute for question in items):
+            return False
+        if author and not any((question.author or '') == author for question in items):
+            return False
+        return True
+
+    def matches_uuid(items):
+        token = paper_uuid[1:] if paper_uuid.startswith('P') else paper_uuid
+        try:
+            question_id = int(token)
+        except ValueError:
+            return False
+        return any(question.id == question_id for question in items)
+
+    matched = []
+    if not match_paper and not match_question and not paper_uuid:
+        matched = []
+    else:
+        for name, items in grouped.items():
+            if paper_uuid:
+                if matches_uuid(items):
+                    matched.append(name)
+                continue
+            difficulty = paper_difficulty(items)
+            by_paper = match_paper and (not keyword or keyword.lower() in name.lower()) and paper_attr(items, difficulty)
+            by_question = match_question and any(question_keyword(question) and question_attr(question) for question in items)
+            if by_paper or by_question:
+                matched.append(name)
+
+    def sort_key(name):
+        times = [question.created_at for question in grouped[name] if question.created_at]
+        latest = max(times) if times else datetime.min
+        return latest
+
+    matched.sort(key=sort_key, reverse=True)
+    total_groups = len(matched)
+    if paper_uuid:
+        page_names = matched
+        page = 1
+    else:
+        start = (page - 1) * per_page
+        page_names = matched[start:start + per_page]
+    pages = max((total_groups + per_page - 1) // per_page, 1) if total_groups else 0
+
     result_groups = []
-    for idx, (paper_name, group) in enumerate(groups.items(), 1):
-        # 只保留原始匹配的试卷
-        if paper_name not in original_paper_names:
-            continue
-            
-        # 计算加权平均难度
-        if group['total_score'] > 0:
-            difficulty = round(group['weighted_difficulty'] / group['total_score'], 2)
-        else:
-            difficulty = 0
-        
+    total_questions = 0
+    for index, name in enumerate(page_names, 1):
+        items = sorted(grouped[name], key=lambda question: question.id)
+        total_questions += len(items)
+        questions_payload = []
+        total_score = 0
+        weighted = 0
+        for number, question in enumerate(items, 1):
+            payload = question.to_dict()
+            payload['question_number'] = number
+            score = question.default_score or 40
+            total_score += score
+            weighted += score * (question.difficulty or 0)
+            questions_payload.append(payload)
+        difficulty = round(weighted / total_score, 2) if total_score else 0
         result_groups.append({
-            'paper_id': idx,  # 序号ID
-            'paper_key': paper_name,  # 稳定分组键，用于批量删除等操作
-            'paper_uuid': group['paper_uuid'],
-            'paper_name': group['paper_name'],
+            'paper_id': index,
+            'paper_key': name,
+            'paper_uuid': f"P{items[0].id}",
+            'paper_name': name,
             'difficulty': difficulty,
-            'question_count': len(group['questions']),
-            'questions': group['questions']
+            'question_count': len(questions_payload),
+            'questions': questions_payload,
         })
-    
+
     return jsonify({
         'groups': result_groups,
-        'total': len(result_groups),  # 按试卷数量计数
-        'total_questions': pagination.total,  # 题目总数
-        'pages': pagination.pages,
+        'total': total_groups,
+        'total_questions': sum(len(grouped[name]) for name in matched),
+        'pages': pages,
         'current_page': page
     })
 
@@ -257,6 +272,9 @@ def get_questions():
 @jwt_required()
 def get_question(question_id):
     """获取单个题目详情"""
+    user, err = _staff_user()
+    if err:
+        return err
     question = Question.query.get(question_id)
     
     if not question:
@@ -269,12 +287,9 @@ def get_question(question_id):
 @jwt_required()
 def create_question():
     """创建题目"""
-    user_id = get_jwt_identity()
-    current_user = User.query.get(user_id)
-    
-    # 只有教师和管理员可以创建题目
-    if current_user.role not in ['admin', 'teacher']:
-        return jsonify({'error': '权限不足'}), 403
+    current_user, err = _staff_user()
+    if err:
+        return err
     
     data = request.get_json()
     
@@ -343,11 +358,9 @@ def create_question():
 @jwt_required()
 def batch_import():
     """批量导入题目（AI导入）"""
-    user_id = get_jwt_identity()
-    current_user = User.query.get(int(user_id))
-    
-    if current_user.role not in ['admin', 'teacher']:
-        return jsonify({'error': '权限不足'}), 403
+    current_user, err = _staff_user()
+    if err:
+        return err
     
     data = request.get_json()
     
@@ -399,6 +412,10 @@ def batch_import():
         
         # 分值
         score = q.get('score') or q.get('default_score') or 40
+        try:
+            score = int(score)
+        except (TypeError, ValueError):
+            score = 40
         
         # 年份
         year = q.get('year')
@@ -420,7 +437,7 @@ def batch_import():
             source_info=q.get('source_info', ''),
             author=q.get('author', ''),
             year=year,
-            default_score=int(score)
+            default_score=score
         )
         
         content_imgs = q.get('content_images')
@@ -474,11 +491,9 @@ def batch_import():
 @jwt_required()
 def crop_with_boxes():
     """根据用户画的框裁剪图片"""
-    user_id = get_jwt_identity()
-    current_user = User.query.get(user_id)
-    
-    if current_user.role not in ['admin', 'teacher']:
-        return jsonify({'error': '权限不足'}), 403
+    current_user, err = _staff_user()
+    if err:
+        return err
     
     data = request.get_json()
     if not data or not data.get('crops'):
@@ -490,29 +505,22 @@ def crop_with_boxes():
         return jsonify({'error': '缺少upload session_id'}), 400
     upload_folder = get_session_dir(current_app, session_id)
     
-    import cv2
-    import uuid
-    
     all_cropped = []
     
     for item in crops:
-        fname = item.get('filename')
+        fname = os.path.basename(str(item.get('filename') or ''))
         boxes = item.get('boxes', [])
         
-        if not fname or not boxes:
+        if not fname or fname in ('.', '..') or not boxes:
             continue
         
         file_path = os.path.join(upload_folder, fname)
-        if not os.path.exists(file_path):
+        if not os.path.isfile(file_path):
             continue
         
         try:
             from PIL import Image
             img = Image.open(file_path)
-            img_cv = cv2.imread(file_path)
-            if img_cv is None:
-                continue
-            
             img_width, img_height = img.size
             
             for box in boxes:
@@ -534,10 +542,12 @@ def crop_with_boxes():
                 if x2 <= x1 or y2 <= y1:
                     continue
                 
-                cropped = img_cv[y1:y2, x1:x2]
+                cropped = img.crop((x1, y1, x2, y2))
+                if cropped.mode in ('RGBA', 'P'):
+                    cropped = cropped.convert('RGB')
                 crop_name = f"crop_{uuid.uuid4().hex[:8]}.png"
                 crop_path = os.path.join(upload_folder, crop_name)
-                cv2.imwrite(crop_path, cropped)
+                cropped.save(crop_path, 'PNG')
                 
                 all_cropped.append({
                     'filename': crop_name,
@@ -559,18 +569,15 @@ def crop_with_boxes():
 @jwt_required()
 def update_question(question_id):
     """更新题目"""
-    user_id = get_jwt_identity()
-    current_user = User.query.get(user_id)
+    current_user, err = _staff_user()
+    if err:
+        return err
     
     question = Question.query.get(question_id)
     if not question:
         return jsonify({'error': '题目不存在'}), 404
     
-    # 教师和管理员都有权限修改
-    if current_user.role not in ['admin', 'teacher']:
-        return jsonify({'error': '权限不足'}), 403
-    
-    data = request.get_json()
+    data = request.get_json() or {}
     upload_session_id = data.get('upload_session_id')
     
     if 'title' in data:
@@ -584,21 +591,30 @@ def update_question(question_id):
     if data.get('question_type'):
         question.question_type = data['question_type']
     if data.get('difficulty') is not None:
-        question.difficulty = data['difficulty']
-    if data.get('source_type'):
-        question.source_type = data['source_type']
+        try:
+            question.difficulty = min(5.0, max(0.0, float(data['difficulty'])))
+        except (TypeError, ValueError):
+            pass
+    if 'source_type' in data:
+        question.source_type = data['source_type'] or None
     if 'source_institute' in data:
         question.source_institute = data['source_institute']
     if 'author' in data:
         question.author = data['author']
-    if data.get('content_images'):
-        question.content_images = json.dumps(data['content_images'])
-    if data.get('answer_images'):
-        question.answer_images = json.dumps(data['answer_images'])
-    if data.get('year'):
-        question.year = data['year']
-    if data.get('default_score'):
-        question.default_score = data['default_score']
+    if 'content_images' in data:
+        question.content_images = json.dumps(data['content_images']) if data['content_images'] else None
+    if 'answer_images' in data:
+        question.answer_images = json.dumps(data['answer_images']) if data['answer_images'] else None
+    if 'year' in data:
+        try:
+            question.year = int(data['year']) if data['year'] not in (None, '') else None
+        except (TypeError, ValueError):
+            question.year = None
+    if data.get('default_score') not in (None, ''):
+        try:
+            question.default_score = int(data['default_score'])
+        except (TypeError, ValueError):
+            pass
     
     db.session.commit()
 
@@ -637,11 +653,9 @@ def update_question(question_id):
 @jwt_required()
 def batch_delete_questions_by_papers():
     """按前端试卷分组批量删除题目。"""
-    user_id = get_jwt_identity()
-    current_user = User.query.get(user_id)
-
-    if current_user.role not in ['admin', 'teacher']:
-        return jsonify({'error': '权限不足'}), 403
+    current_user, err = _staff_user()
+    if err:
+        return err
 
     data = request.get_json() or {}
     paper_keys = data.get('paper_keys') or []
@@ -655,27 +669,26 @@ def batch_delete_questions_by_papers():
 
     target_paper_names = set(str(name) for name in paper_keys if name)
 
-    # 与 get_questions 的分组序号保持一致：按创建时间倒序得到试卷分组。
-    questions = Question.query.order_by(Question.created_at.desc()).all()
-    groups = []
-    seen = set()
-    for question in questions:
-        paper_name = question.title or question.question_title or '未命名题目'
-        if paper_name not in seen:
-            seen.add(paper_name)
-            groups.append(paper_name)
+    # paper_ids 是当前页的序号，和全库顺序对不上。只有没传稳定的 paper_keys 时才用它。
+    if not target_paper_names:
+        questions = Question.query.order_by(Question.created_at.desc()).all()
+        groups = []
+        seen = set()
+        for question in questions:
+            paper_name = _paper_name(question)
+            if paper_name not in seen:
+                seen.add(paper_name)
+                groups.append(paper_name)
+        for paper_id in paper_ids:
+            try:
+                group_index = int(paper_id)
+            except (TypeError, ValueError):
+                continue
+            if 1 <= group_index <= len(groups):
+                target_paper_names.add(groups[group_index - 1])
 
     deleted_count = 0
     deleted_papers = set()
-
-    for paper_id in paper_ids:
-        try:
-            group_index = int(paper_id)
-        except (TypeError, ValueError):
-            continue
-
-        if 1 <= group_index <= len(groups):
-            target_paper_names.add(groups[group_index - 1])
 
     for paper_name in target_paper_names:
         if paper_name in deleted_papers:
@@ -689,6 +702,7 @@ def batch_delete_questions_by_papers():
             )
         ).all()
         for question in paper_questions:
+            _detach_question(question)
             db.session.delete(question)
             deleted_count += 1
 
@@ -701,17 +715,15 @@ def batch_delete_questions_by_papers():
 @jwt_required()
 def delete_question(question_id):
     """删除题目"""
-    user_id = get_jwt_identity()
-    current_user = User.query.get(user_id)
+    current_user, err = _staff_user()
+    if err:
+        return err
     
     question = Question.query.get(question_id)
     if not question:
         return jsonify({'error': '题目不存在'}), 404
     
-    # 教师和管理员都有权限删除
-    if current_user.role not in ['admin', 'teacher']:
-        return jsonify({'error': '权限不足'}), 403
-    
+    _detach_question(question)
     db.session.delete(question)
     db.session.commit()
     
@@ -722,11 +734,9 @@ def delete_question(question_id):
 @jwt_required()
 def upload_image():
     """上传图片（自动压缩，支持尺寸选择）"""
-    user_id = get_jwt_identity()
-    current_user = User.query.get(user_id)
-    
-    if current_user.role not in ['admin', 'teacher']:
-        return jsonify({'error': '权限不足'}), 403
+    current_user, err = _staff_user()
+    if err:
+        return err
     
     if 'file' not in request.files:
         return jsonify({'error': '没有上传文件'}), 400
@@ -916,17 +926,16 @@ def get_image(filename):
 @jwt_required()
 def resize_image():
     """调整单张图片尺寸"""
-    user_id = get_jwt_identity()
-    current_user = User.query.get(user_id)
-    
-    if current_user.role not in ['admin', 'teacher']:
-        return jsonify({'error': '权限不足'}), 403
+    current_user, err = _staff_user()
+    if err:
+        return err
     
     filename = request.args.get('filename')
     session_id = request.args.get('session_id')
     size = request.args.get('size', 'medium')
     
-    if not filename:
+    filename = os.path.basename(filename or '')
+    if not filename or filename in ('.', '..'):
         return jsonify({'error': '请提供文件名'}), 400
     
     # 优先在上传会话目录中找
@@ -986,11 +995,9 @@ def resize_image():
 @jwt_required()
 def compress_images():
     """压缩指定图片为 200dpi JPEG，质量 75-80"""
-    user_id = get_jwt_identity()
-    current_user = User.query.get(user_id)
-    
-    if current_user.role not in ['admin', 'teacher']:
-        return jsonify({'error': '权限不足'}), 403
+    current_user, err = _staff_user()
+    if err:
+        return err
     
     data = request.get_json()
     if not data or not data.get('filenames'):
@@ -1009,6 +1016,10 @@ def compress_images():
     results = []
     
     for fname in filenames:
+        fname = os.path.basename(str(fname or ''))
+        if not fname or fname in ('.', '..'):
+            results.append({'filename': fname, 'status': 'not_found'})
+            continue
         file_path = os.path.join(upload_folder, fname)
         if not os.path.exists(file_path):
             results.append({'filename': fname, 'status': 'not_found'})

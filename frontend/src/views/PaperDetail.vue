@@ -423,10 +423,18 @@ async function handlePublish() {
 
   publishing.value = true
   try {
-    const uuid = route.params.uuid
-    const paperId = uuid.replace(/^P/, '')
-
-    await api.post(`/papers/${paperId}/publish`, {
+    const created = await api.post('/papers', {
+      title: paperName.value,
+      exam_date: publishForm.exam_date,
+      start_time: publishForm.start_time,
+      end_time: publishForm.end_time,
+      allow_view_after_exam: publishForm.allow_view_after_exam,
+      questions: questions.value.map(q => ({
+        question_id: q.id,
+        score: q.default_score || 40
+      }))
+    })
+    await api.post(`/papers/${created.paper.id}/publish`, {
       class_id: publishForm.class_id,
       exam_date: publishForm.exam_date,
       start_time: publishForm.start_time,
@@ -452,9 +460,9 @@ async function loadPaper() {
 
   loading.value = true
   try {
-    const res = await api.get('/questions', { params: { per_page: 200 } })
+    const res = await api.get('/questions', { params: { paper_uuid: uuid, per_page: 1 } })
     const allGroups = res.groups || []
-    const matchedGroup = allGroups.find(g => g.paper_uuid === uuid)
+    const matchedGroup = allGroups[0] || allGroups.find(g => g.paper_uuid === uuid)
 
     if (matchedGroup) {
       paperName.value = matchedGroup.paper_name

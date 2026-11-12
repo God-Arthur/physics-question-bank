@@ -9,11 +9,14 @@ PDF预览会话管理模块
 """
 
 import os
+import re
 import shutil
 import uuid
 import threading
 import time
 import logging
+
+_PREVIEW_ID_RE = re.compile(r'^(answer_)?[0-9a-fA-F-]{16,64}$')
 
 
 logger = logging.getLogger(__name__)
@@ -38,8 +41,14 @@ def create_pdf_preview_session(app, user_id):
     return session_id
 
 
+def _safe_session_id(session_id):
+    return isinstance(session_id, str) and re.fullmatch(r'[0-9a-fA-F-]{16,64}', session_id) is not None
+
+
 def get_pdf_session_dir(app, session_id):
     """获取PDF预览会话目录，不存在返回 None"""
+    if not _safe_session_id(session_id):
+        return None
     session_dir = os.path.join(get_pdf_session_base(app), session_id)
     if os.path.isdir(session_dir):
         return session_dir
@@ -48,6 +57,8 @@ def get_pdf_session_dir(app, session_id):
 
 def get_tex_path(app, session_id, preview_id):
     """获取 .tex 文件路径"""
+    if not isinstance(preview_id, str) or _PREVIEW_ID_RE.fullmatch(preview_id) is None:
+        return None
     session_dir = get_pdf_session_dir(app, session_id)
     if not session_dir:
         return None

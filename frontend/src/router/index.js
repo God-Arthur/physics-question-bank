@@ -28,7 +28,7 @@ const routes = [
         path: 'questions/:uuid',
         name: 'PaperDetail',
         component: () => import('../views/PaperDetail.vue'),
-        meta: { title: '试卷详情' }
+        meta: { title: '试卷详情', roles: ['admin', 'teacher'] }
       },
       {
         path: 'questions/create',
@@ -40,7 +40,7 @@ const routes = [
         path: 'import',
         name: 'QuestionImport',
         component: () => import('../views/QuestionAIImport.vue'),
-        meta: { title: '批量导入题目' }
+        meta: { title: '批量导入题目', roles: ['admin', 'teacher'] }
       },
       {
         path: 'questions/:id/edit',
@@ -58,7 +58,7 @@ const routes = [
         path: 'papers',
         name: 'Papers',
         component: () => import('../views/Papers.vue'),
-        meta: { title: '试卷列表' }
+        meta: { title: '试卷列表', roles: ['admin', 'teacher'] }
       },
       {
         path: 'my-exams',
@@ -153,7 +153,7 @@ router.beforeEach(async (to, from, next) => {
       if (to.meta.roles.includes(authStore.userRole)) {
         next()
       } else {
-        next('/')
+        next(authStore.userRole === 'student' ? '/my-exams' : '/questions')
       }
     } catch {
       authStore.logout()

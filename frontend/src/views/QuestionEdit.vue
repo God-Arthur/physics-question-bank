@@ -530,12 +530,9 @@ function removeAnswerImage(index) {
 }
 
 function handleSourceTypeChange(val) {
-  // 切换来源类型时清空相关字段
+  // 机构只属于模拟题；作者是独立字段，切换来源时不能清掉
   if (val !== 'mock') {
     form.source_institute = ''
-  }
-  if (val !== 'original') {
-    form.author = ''
   }
 }
 
@@ -684,7 +681,7 @@ async function handleSubmit() {
     // 如果有来源页（试卷详情页），返回来源页
     const from = route.query.from
     if (from) {
-      router.push(`/papers/${from}`)
+      router.push(`/questions/${from}`)
     } else {
       router.push('/questions')
     }

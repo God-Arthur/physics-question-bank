@@ -97,16 +97,10 @@ async function handleSubmit() {
 
   submitting.value = true
   try {
-    // 先验证当前密码
-    const checkRes = await api.post('/auth/login', {
-      username: authStore.user.username,
-      password: form.old_password
+    await api.put(`/auth/users/${authStore.user.id}`, {
+      password: form.new_password,
+      old_password: form.old_password
     })
-
-    // 更新密码
-    const data = { password: form.new_password }
-
-    await api.put(`/auth/users/${authStore.user.id}`, data)
     ElMessage.success('修改成功')
 
     // 清空密码字段
@@ -116,11 +110,8 @@ async function handleSubmit() {
 
     // 刷新用户信息
     await authStore.fetchUser()
-  } catch (error) {
-    if (error?.response?.status === 401) {
-      ElMessage.error('当前密码错误')
-    }
-    // 其他错误已处理
+  } catch {
+    // 请求拦截器已经弹出错误
   } finally {
     submitting.value = false
   }
